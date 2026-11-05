@@ -260,8 +260,46 @@ test('next-wave with nothing planned sets phase verifying', () => {
   assert.equal(loadRun(root, id).phase, 'verifying');
 });
 
-test('next-wave requires phase running', () => {
+test('next-wave requires phase running, or verifying/reviewing with planned tickets', () => {
   const { root } = setup();
+  runCli(['phase', 'merging'], { cwd: root });
+  assert.equal(runCli(['next-wave'], { cwd: root }).code, 3);
+  runCli(['phase', 'awaiting_approval'], { cwd: root });
+  assert.equal(runCli(['next-wave'], { cwd: root }).code, 3);
+});
+
+/** Wave 1 merged, wave 2's T3 left planned, run moved to `phase`. */
+function afterLastWave(phase) {
+  const { root, id, wt } = setup();
+  report(root, 'T1', wt.T1);
+  report(root, 'T2', wt.T2);
+  for (const t of ['T1', 'T2']) assert.equal(runCli(['merge', t], { cwd: root }).code, 0);
+  assert.equal(runCli(['phase', phase], { cwd: root }).code, 0);
+  return { root, id };
+}
+
+for (const phase of ['verifying', 'reviewing']) {
+  test(`next-wave from ${phase} with planned tickets re-enters running at the lowest planned wave`, () => {
+    const { root, id } = afterLastWave(phase);
+    const r = runCli(['next-wave'], { cwd: root });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /wave 2/);
+    const run = loadRun(root, id);
+    assert.equal(run.phase, 'running');
+    assert.equal(run.current_wave, 2);
+    assert.equal(runCli(['start-ticket', 'T3'], { cwd: root }).code, 0);
+    assert.ok(events(root, id, 'phase').some((e) => e.from === phase && e.to === 'running'));
+  });
+}
+
+test('next-wave from verifying or reviewing with nothing planned is refused', () => {
+  const { root, id } = afterLastWave('reviewing');
+  const f = join(stateDir(root), 'runs', id, 'tickets', 'T3.json');
+  writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, 'utf8')), status: 'dropped' }));
+  const r = runCli(['next-wave'], { cwd: root });
+  assert.equal(r.code, 3);
+  assert.match(r.stderr, /no ticket is planned/);
+  assert.equal(loadRun(root, id).phase, 'reviewing');
   runCli(['phase', 'verifying'], { cwd: root });
   assert.equal(runCli(['next-wave'], { cwd: root }).code, 3);
 });

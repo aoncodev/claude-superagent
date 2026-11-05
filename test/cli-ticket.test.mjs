@@ -101,8 +101,61 @@ test('start-ticket refuses outside the running phase and for unknown tickets', (
   assert.equal(start(root, 'T1').code, 3);
   assert.equal(runCli(['phase', 'running'], { cwd: root }).code, 0);
   assert.equal(start(root, 'T9').code, 1);
-  assert.equal(runCli(['start-ticket', 'T1'], { cwd: root }).code, 1);
+  assert.equal(runCli(['start-ticket', 'T1', '--agent'], { cwd: root }).code, 1);
   assert.equal(ticket(root, id, 'T1').attempts, 0);
+});
+
+test('start-ticket without --agent runs the ticket with no agent; set-agent records it and claim never races', () => {
+  const { root, id } = setup();
+  const r = runCli(['start-ticket', 'T1'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  let t = ticket(root, id, 'T1');
+  assert.equal(t.status, 'running');
+  assert.equal(t.attempts, 1);
+  assert.equal(t.agent_id, null);
+  // The worker exists only after start-ticket, so its claim always finds the ticket running.
+  const wt = worktree(root, 'x1');
+  assert.equal(runCli(['claim', 'T1'], { cwd: wt }).code, 0);
+  const s = runCli(['set-agent', 'T1', '--agent', 'x1'], { cwd: root });
+  assert.equal(s.code, 0, s.stderr);
+  t = ticket(root, id, 'T1');
+  assert.equal(t.agent_id, 'x1');
+  assert.equal(t.attempts, 1, 'set-agent does not count an attempt');
+  assert.match(readFileSync(join(stateDir(root), 'runs', id, 'events.jsonl'), 'utf8'), /"type":"agent_set"/);
+});
+
+test('start-ticket without --agent clears the agent id of the previous attempt', () => {
+  const { root, id } = setup();
+  assert.equal(start(root, 'T1', 'old').code, 0);
+  assert.equal(runCli(['start-ticket', 'T1'], { cwd: root }).code, 0);
+  assert.equal(ticket(root, id, 'T1').agent_id, null);
+  assert.equal(ticket(root, id, 'T1').attempts, 2);
+});
+
+test('set-agent needs --agent and a running ticket', () => {
+  const { root, id } = setup();
+  assert.equal(runCli(['set-agent', 'T1', '--agent', 'a'], { cwd: root }).code, 3, 'planned ticket');
+  assert.equal(start(root, 'T1').code, 0);
+  assert.equal(runCli(['set-agent', 'T1'], { cwd: root }).code, 1);
+  assert.equal(runCli(['set-agent', 'T9', '--agent', 'a'], { cwd: root }).code, 1);
+  assert.equal(ticket(root, id, 'T1').agent_id, 'a1');
+});
+
+test('mark-failed fails a running ticket with a reason event; status shows the reason', () => {
+  const { root, id } = setup();
+  assert.equal(runCli(['mark-failed', 'T1', '--reason', 'x'], { cwd: root }).code, 3, 'planned ticket');
+  assert.equal(start(root, 'T1').code, 0);
+  assert.equal(runCli(['mark-failed', 'T1'], { cwd: root }).code, 1, 'reason required');
+  const r = runCli(['mark-failed', 'T1', '--reason', 'Worker ended twice without a report.'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(ticket(root, id, 'T1').status, 'failed');
+  const ev = readFileSync(join(stateDir(root), 'runs', id, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.type === 'ticket_failed');
+  assert.equal(ev.length, 1);
+  assert.equal(ev[0].ticket, 'T1');
+  assert.equal(ev[0].reason, 'Worker ended twice without a report.');
+  const st = runCli(['status'], { cwd: root });
+  assert.match(st.stdout, /- T1 failed: Worker ended twice without a report\./);
+  assert.equal(runCli(['mark-failed', 'T1', '--reason', 'again'], { cwd: root }).code, 3, 'already failed');
 });
 
 test('claim from the main checkout exits 3', () => {

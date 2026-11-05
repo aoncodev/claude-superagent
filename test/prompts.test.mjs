@@ -63,9 +63,16 @@ test('orchestrate skill: frontmatter, CLI commands and key rules', () => {
   assert.ok(meta.description, 'SKILL.md needs a description');
   const commands = ['init', 'propose', 'approve', 'start-ticket', 'merge', 'answer', 'add-ticket', 'next-wave', 'verify-result', 'review', 'finish', 'status'];
   for (const c of commands) assert.ok(body.includes(`superagent ${c}`), `SKILL.md must mention \`superagent ${c}\``);
-  for (const s of ['verbatim', 'isolation', 'superagent:worker', 'superagent:fidelity-reviewer', 'SendMessage', 'AskUserQuestion', 'proposal-format.md']) {
+  for (const s of ['verbatim', 'isolation', 'superagent:worker', 'superagent:fidelity-reviewer', 'SendMessage', 'AskUserQuestion', 'ListAgents', 'proposal-format.md']) {
     assert.ok(body.includes(s), `SKILL.md must mention ${s}`);
   }
+  for (const c of ['set-agent', 'mark-failed', 'merge-continue']) assert.ok(body.includes(`superagent ${c}`), `SKILL.md must mention \`superagent ${c}\``);
+  assert.ok(!body.includes('superagent phase'), 'fix and fidelity waves re-enter through next-wave, not `superagent phase`');
+  assert.ok(!/if the tool offers/i.test(body), 'background agents are stated flatly');
+  const launch = body.slice(body.indexOf('**a. Launch.**'), body.indexOf('**b. '));
+  const order = ['superagent start-ticket', 'Agent call', 'superagent set-agent'].map((s) => launch.indexOf(s));
+  assert.ok(order.every((i) => i >= 0) && order[0] < order[1] && order[1] < order[2], 'launch order is start-ticket, Agent, set-agent');
+  assert.ok(body.split('\n').length <= 160, 'SKILL.md stays short');
 });
 
 test('slash commands: descriptions, arguments, no name collision with the skill', () => {
@@ -90,6 +97,10 @@ test('proposal-format.md: the example plan passes validatePlan', async () => {
   const example = blocks.map((b) => JSON.parse(b)).find((p) => p && Array.isArray(p.tickets) && p.charter);
   assert.ok(example, 'proposal-format.md must contain a complete Plan example in a ```json block');
   assert.deepEqual(validatePlan(example), []);
+  const shared = /(^|\/)(package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|pnpm-workspace\.yaml)$|^\.github\//;
+  for (const t of example.tickets.filter((x) => x.kind === 'work' || x.kind === 'fix')) {
+    for (const o of t.owns) assert.ok(!shared.test(o), `${t.id} is a work ticket but owns shared file ${o}`);
+  }
   const kinds = new Set(example.tickets.map((t) => t.kind));
   assert.ok(kinds.has('contracts') && kinds.has('work'), 'example has contracts and work tickets');
   const waves = new Map();

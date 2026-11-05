@@ -50,7 +50,7 @@ Plan = {
 ## Rules for a good split (not enforced; follow them)
 
 - Contracts first: API description, schema, shared types, env var names, folder layout. Name each contract file in `contracts`, and have one contracts ticket write them.
-- Shared files (manifests, lockfiles, root config, route registries, CI workflow files) belong to the scaffold or contracts ticket. If later tickets plug into a registry, the contracts ticket registers stubs they then own.
+- Shared files (manifests, lockfiles, root config, route registries, CI workflow files) belong to the scaffold or contracts ticket. The scaffold installs every dependency the plan needs up front, so later tickets never touch the manifest or lockfile. If later tickets plug into a registry, the contracts ticket registers stubs they then own.
 - A later wave only for real dependencies; otherwise put work in the same wave so it runs in parallel.
 - `done_when` uses only parallel-safe checks. Anything needing running services or a real database goes in `project.integration_checks`.
 - Aim for about 5–12 tickets.
@@ -59,7 +59,7 @@ Plan = {
 
 Idea (empty folder): "Build a small bookmarks web app: a page where I can save a link (URL + title) and see all saved links, newest first. Store them in SQLite. Add a GitHub Actions CI job that runs the tests on every push."
 
-Waves: 0 scaffold, 1 contracts, 2 migration + frontend page + CI job in parallel, 3 backend endpoint + integration test in parallel.
+Waves: 0 scaffold (which also owns the CI workflow, a shared file, and installs every dependency up front), 1 contracts, 2 migration + frontend page in parallel, 3 backend endpoint + integration test in parallel.
 
 ```json
 {
@@ -94,11 +94,11 @@ Waves: 0 scaffold, 1 contracts, 2 migration + frontend page + CI job in parallel
   ],
   "tickets": [
     {
-      "id": "T1", "title": "Workspace scaffold", "kind": "scaffold", "wave": 0,
-      "scope": "A pnpm workspace with an api package (Fastify) and a web package (React + Vite), each with typecheck, test and build scripts and one passing test; api also has a test:integration script for api/test/integration/, kept out of the plain test run.",
-      "owns": ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "tsconfig.base.json", ".gitignore", "api/", "web/"],
+      "id": "T1", "title": "Workspace scaffold and CI", "kind": "scaffold", "wave": 0,
+      "scope": "A pnpm workspace with an api package (Fastify, better-sqlite3) and a web package (React + Vite), with every dependency the plan needs installed and locked, typecheck, test and build scripts, and one passing test each; api also has a test:integration script for api/test/integration/, kept out of the plain test run. A GitHub Actions workflow runs pnpm install, pnpm -r typecheck and pnpm -r test on every push.",
+      "owns": ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "tsconfig.base.json", ".gitignore", ".github/workflows/ci.yml", "api/", "web/"],
       "reads": [], "contracts": [],
-      "done_when": ["pnpm install succeeds", "pnpm -r typecheck passes", "pnpm -r test passes"]
+      "done_when": ["pnpm install succeeds", "pnpm -r typecheck passes", "pnpm -r test passes", "the workflow parses as YAML and runs exactly the project's setup and check commands"]
     },
     {
       "id": "T2", "title": "Contracts and route stubs", "kind": "contracts", "wave": 1,
@@ -122,21 +122,14 @@ Waves: 0 scaffold, 1 contracts, 2 migration + frontend page + CI job in parallel
       "done_when": ["pnpm --filter web typecheck passes", "pnpm --filter web test passes, with the API mocked"]
     },
     {
-      "id": "T5", "title": "CI job", "kind": "work", "wave": 2,
-      "scope": "A GitHub Actions workflow runs pnpm install, pnpm -r typecheck and pnpm -r test on every push.",
-      "owns": [".github/workflows/ci.yml"],
-      "reads": ["package.json"], "contracts": [],
-      "done_when": ["the workflow parses as YAML and runs exactly the project's setup and check commands"]
-    },
-    {
-      "id": "T6", "title": "Bookmarks API endpoints", "kind": "work", "wave": 3,
+      "id": "T5", "title": "Bookmarks API endpoints", "kind": "work", "wave": 3,
       "scope": "GET /api/bookmarks returns all bookmarks newest first and POST /api/bookmarks saves one, rejecting a missing url or title, as contracts/openapi.yaml describes.",
       "owns": ["api/src/bookmarks/"],
       "reads": ["contracts/", "api/src/db.ts", "api/migrations/"], "contracts": ["C1", "C2", "C3"],
       "done_when": ["pnpm --filter api test passes, with handler tests against an in-memory database"]
     },
     {
-      "id": "T7", "title": "API integration test", "kind": "work", "wave": 3,
+      "id": "T6", "title": "API integration test", "kind": "work", "wave": 3,
       "scope": "An integration test starts the API on a random port with a temporary database file and checks that a saved bookmark comes back first from GET /api/bookmarks.",
       "owns": ["api/test/integration/"],
       "reads": ["contracts/"], "contracts": ["C1", "C4"],

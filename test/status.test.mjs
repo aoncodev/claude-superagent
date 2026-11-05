@@ -62,3 +62,23 @@ test('Needs you groups all blocked tickets before all failed/dropped ones, merge
   const items = out.split('\n').slice(1, -1).map((l) => l.match(/^- (T\d)/)[1]);
   assert.deepEqual(items, ['T2', 'T4', 'T1', 'T3', 'T9']);
 });
+
+test('a failed ticket marked failed shows the reason of its latest ticket_failed event, unless a newer report exists', () => {
+  const ev = [
+    { type: 'ticket_started', ticket: 'T1' },
+    { type: 'ticket_failed', ticket: 'T1', reason: 'Worker ended twice without a report.' },
+    { type: 'ticket_reported', ticket: 'T2', status: 'failed' },
+    { type: 'ticket_failed', ticket: 'T3', reason: 'old reason' },
+    { type: 'ticket_reported', ticket: 'T3', status: 'failed' },
+  ];
+  const out = renderStatus(
+    run(),
+    [tk('T1', 'failed'), tk('T2', 'failed'), tk('T3', 'failed')],
+    { T2: { summary: 'Build broke.' }, T3: { summary: 'Newer report.' } },
+    ev,
+  );
+  assert.match(out, /- T1 failed: Worker ended twice without a report\./);
+  assert.match(out, /- T2 failed: Build broke\./);
+  assert.match(out, /- T3 failed: Newer report\./);
+  assert.doesNotMatch(out, /old reason/);
+});
