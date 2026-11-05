@@ -153,7 +153,8 @@ test('a corrupt ticket, an unreadable active pointer, or a corrupt config fail o
   const c = setup();
   writeFileSync(join(c.root, '.superagent', 'config.json'), '][');
   const h = runHook(BASH, payload(c.root, 'Bash', { command: 'git push' }));
-  assert.equal(h.code, 0); assert.match(h.stderr, /superagent guard: .+ \(allowing\)/);
+  denyReason(h); // an unreadable config does not disable push blocking (see fix 2)
+  assert.match(h.stderr, /superagent guard: .+/);
 });
 
 test('malformed stdin fails open with a warning', () => {
@@ -180,4 +181,41 @@ test('hooks.json registers both guards with ${CLAUDE_PLUGIN_ROOT} and a 10s time
   assert.equal(byMatcher.Bash.command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/guard-bash.mjs"');
   for (const h of Object.values(byMatcher)) { assert.equal(h.type, 'command'); assert.equal(h.timeout, 10); }
   assert.ok(existsSync(FILES) && existsSync(BASH));
+});
+
+// ---- fix round 1 ----
+
+test('fix 2: an unreadable config.json does not disable push blocking; it warns', () => {
+  const { root } = setup();
+  writeFileSync(join(root, '.superagent', 'config.json'), '][');
+  const r = runHook(BASH, payload(root, 'Bash', { command: 'git push' }));
+  assert.match(denyReason(r), /Blocked: `push`/);
+  assert.match(r.stderr, /^superagent guard: config\.json unreadable: .+ \(continuing with defaults\)\n$/);
+  const ok = runHook(BASH, payload(root, 'Bash', { command: 'git status' }));
+  assert.equal(ok.code, 0); assert.equal(ok.stdout, ''); assert.match(ok.stderr, /superagent guard: config\.json unreadable/);
+});
+
+test('fix 2: an unloadable run still fails open', () => {
+  const { root } = setup();
+  writeFileSync(join(root, '.superagent', 'active'), 'no-such-run\n');
+  const r = runHook(BASH, payload(root, 'Bash', { command: 'git push' }));
+  assert.equal(r.code, 0); assert.equal(r.stdout, ''); assert.match(r.stderr, /superagent guard: .+ \(allowing\)/);
+});
+
+test('fix 1/6: parent-dir tampering and git clean -x are denied by the hook', () => {
+  const { root } = setup();
+  for (const command of ['rm -rf .superagent', 'mv .superagent /tmp/x', 'git clean -fdx', 'cd .superagent && echo x > runs/r1/run.json', 'git \\\npush']) {
+    denyReason(runHook(BASH, payload(root, 'Bash', { command })));
+  }
+});
+
+test('fix 7: from one worktree, writing into another worktree is denied', () => {
+  const { root, wt } = setup();
+  const wt2 = join(root, '.claude', 'worktrees', 'agent-b2');
+  sh(root, ['worktree', 'add', '-q', '-b', 'worker/t2', wt2]);
+  writeFileSync(join(root, '.superagent/runs/r1/tickets/T2.json'), JSON.stringify({ id: 'T2', wave: 1, owns: ['apps/api/'], status: 'running', worktree: wt2, branch: 'worker/t2' }));
+  const target = join(wt2, 'apps/api/a.ts');
+  assert.match(denyReason(runHook(FILES, payload(wt, 'Write', { file_path: target, content: '' }))), /You may only edit inside your own worktree\./);
+  allowed(runHook(FILES, payload(wt2, 'Write', { file_path: target, content: '' })));
+  allowed(runHook(FILES, payload(root, 'Write', { file_path: target, content: '' })));
 });

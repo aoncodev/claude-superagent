@@ -17,6 +17,7 @@ await runGuard(({ payload, root }) => {
   let tickets = [];
   let worktree = null;
   let lexicalWorktree = null;
+  let cwdWorktree = null;
   let warning = null;
   try {
     const id = activeRunId(root);
@@ -28,13 +29,14 @@ await runGuard(({ payload, root }) => {
         const realTrees = trees.map((t) => ({ ...t, path: resolveReal(t.path) }));
         worktree = pickWorktree(resolveReal(absPath), realTrees);
         lexicalWorktree = pickWorktree(resolve(absPath), [...trees, ...realTrees]);
+        cwdWorktree = pickWorktree(resolveReal(payload.cwd), realTrees);
       }
     }
   } catch (e) {
     // Unreadable state: only the path-only rule 1 can still be enforced.
-    run = null; tickets = []; worktree = null; lexicalWorktree = null;
+    run = null; tickets = []; worktree = null; lexicalWorktree = null; cwdWorktree = null;
     warning = e?.message ?? String(e);
   }
-  const d = decideFileWrite({ absPath, root, run, tickets, worktree, lexicalWorktree, agentType: payload.agent_type });
+  const d = decideFileWrite({ absPath, root, run, tickets, worktree, lexicalWorktree, cwdWorktree, agentType: payload.agent_type });
   return !d.allow || !warning ? d : { allow: true, warning };
 });

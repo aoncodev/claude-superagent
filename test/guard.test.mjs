@@ -327,3 +327,79 @@ test('decideBash: runs-dir protection applies even with no run, and reads are fi
 test('decideBash: non-string commands are allowed', () => {
   assert.deepEqual(decideBash({ command: undefined, run: run('running'), config: cfg }), { allow: true });
 });
+
+// ---- fix round 1 ----
+
+test('fix 1: rm/mv/cp aimed at the .superagent parent dir are denied (also via glob or absolute path)', () => {
+  const all = { allowed_actions: ['push', 'deploy', 'publish', 'production'] };
+  for (const c of [
+    'rm -rf .superagent', 'rm -rf .superagent/', 'mv .superagent /tmp/x', 'rm -rf /repo/.superagent', 'rm -rf ./.superagent',
+    'rm -rf ../.superagent', 'rm -rf .superagent/*', 'rm -rf .superagent/r*', 'cp -r /tmp/x .superagent', 'mv /tmp/x /repo/.superagent/',
+  ]) {
+    assert.match(denied(decideBash({ command: c, run: run('running', all), config: cfg })), /superagent CLI/, c);
+  }
+  for (const c of ['rm -rf .superagent/drafts/r1', 'rm -rf .superagent/d*', 'cp .superagent/config.json /tmp/c', 'ls .superagent', 'rm -rf .superagent-old', 'rm -rf src/.superagent-x']) {
+    assert.deepEqual(decideBash({ command: c, run: run('running', all), config: cfg }), { allow: true }, c);
+  }
+});
+
+test('fix 3: quote and escape evasion of outward commands is denied', () => {
+  for (const c of [`git "push" origin`, `git 'push' origin`, 'git pu\\sh', 'g\\it push', 'git -C "a b" push', `git -C 'a b' push origin`,
+    `"git" push`, `git p""ush`, `git $'push'`, `FOO="a b" git push`, `sudo "docker" "push" x`, `"npm" publish`, `'heroku' releases`, `bash -c 'git "push"'`]) {
+    denied(B(c));
+  }
+  assert.deepEqual(B(`git commit -m "push"`), { allow: true });
+  assert.deepEqual(B(`git -C "a b" status`), { allow: true });
+});
+
+test('fix 4: line continuation does not hide a command', () => {
+  denied(B('git \\\npush origin main'));
+  denied(B('git \\\r\n  push'));
+  assert.match(denied(B('echo x > .superagent/\\\nruns/r/run.json')), /superagent CLI/);
+  assert.deepEqual(B('git \\\nstatus'), { allow: true });
+});
+
+test('fix 5: cd into .superagent (or beyond) makes relative runs/ operands count', () => {
+  for (const c of [
+    'cd .superagent && echo x > runs/r1/run.json',
+    'cd .superagent && sed -i s/a/b/ runs/r1/run.json',
+    'cd .superagent && rm -rf runs',
+    'cd .superagent && rm -rf *',
+    'cd .superagent && rm -rf .',
+    'cd .superagent; mv runs /tmp/x',
+    'cd /repo/.superagent && tee runs/r1/run.json',
+    'cd .superagent/runs && rm -rf r1',
+    'cd .superagent/runs/r1 && echo x > ../r2/run.json',
+    'cd .superagent && cd runs && rm r1/run.json',
+    'cd .superagent/drafts && echo x > ../runs/r1/run.json',
+    'cd .superagent && rm -rf ../.superagent',
+  ]) {
+    assert.match(denied(B(c, { allowed_actions: ['push'] })), /superagent CLI/, c);
+  }
+  for (const c of ['cd .superagent && cat runs/r1/run.json', 'cd .superagent && echo x > drafts/r1/plan.json', 'cd .superagent && cd .. && rm -rf runs',
+    'cd src && rm -rf runs', 'cd .superagent/drafts && rm -rf r1']) {
+    assert.deepEqual(B(c, { allowed_actions: ['push'] }), { allow: true }, c);
+  }
+});
+
+test('fix 6: git clean -x/-X is denied during an active run regardless of allowed_actions', () => {
+  const all = ['push', 'deploy', 'publish', 'production'];
+  for (const c of ['git clean -fdx', 'git clean -xfd', 'git clean -fdX', 'git clean -f -d -x', 'git clean -x', 'git -C sub clean -fdx', 'cd src && git clean -ffdx', 'git "clean" -fdx', 'sudo git clean -fxd']) {
+    assert.match(denied(B(c, { allowed_actions: all })), /git clean/, c);
+  }
+  for (const c of ['git clean -fd', 'git clean -n', 'git clean -fdn src/', 'git status -x']) assert.deepEqual(B(c), { allow: true }, c);
+  for (const phase of ['proposing', 'done']) assert.deepEqual(decideBash({ command: 'git clean -fdx', run: run(phase), config: cfg }), { allow: true });
+});
+
+test('fix 7: a worker may not write into another linked worktree', () => {
+  const f = fixture();
+  const wt2 = join(f.root, '.claude', 'worktrees', 'agent-b2');
+  mkdirSync(join(wt2, 'apps', 'api'), { recursive: true });
+  const worktree2 = { path: wt2, branch: 'worker/t2', isMain: false };
+  const ticket2 = { id: 'T2', owns: ['apps/api/'], worktree: wt2, status: 'running' };
+  const base = { absPath: join(wt2, 'apps/api/a.ts'), root: f.root, run: run('running'), tickets: [f.ticket, ticket2], worktree: worktree2 };
+  assert.match(denied(decideFileWrite({ ...base, cwdWorktree: f.worktree })), /You may only edit inside your own worktree\./);
+  assert.deepEqual(decideFileWrite({ ...base, cwdWorktree: worktree2 }), { allow: true });
+  assert.deepEqual(decideFileWrite({ ...base, cwdWorktree: f.main }), { allow: true }); // orchestrator in the main checkout
+  assert.deepEqual(decideFileWrite({ ...base, cwdWorktree: null }), { allow: true });
+});

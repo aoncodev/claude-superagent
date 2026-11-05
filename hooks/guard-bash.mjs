@@ -13,15 +13,18 @@ await runGuard(({ payload, root }) => {
   let warning = null;
   try {
     const id = activeRunId(root);
-    if (id) {
-      run = loadRun(root, id);
-      config = readConfig(root);
-    }
+    if (id) run = loadRun(root, id);
   } catch (e) {
-    // Unreadable state: only the always-on protection of .superagent/runs/ still applies.
+    // Unloadable run: fail open, but the always-on protection of .superagent/runs/ still applies.
     run = null;
     warning = e?.message ?? String(e);
   }
+  try {
+    config = readConfig(root);
+  } catch (e) {
+    // Unreadable config: keep blocking outward actions, with default (empty) production markers.
+    warning = warning ?? `config.json unreadable: ${e?.message ?? e}`;
+  }
   const d = decideBash({ command, run, config });
-  return !d.allow || !warning ? d : { allow: true, warning };
+  return warning ? { ...d, warning } : d;
 });

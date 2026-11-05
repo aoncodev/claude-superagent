@@ -19,8 +19,8 @@ export function emitDeny(reason) {
   })}\n`);
 }
 
-export function warn(message) {
-  process.stderr.write(`superagent guard: ${String(message).replace(/\s+/g, ' ')} (allowing)\n`);
+export function warn(message, outcome = 'allowing') {
+  process.stderr.write(`superagent guard: ${String(message).replace(/\s+/g, ' ')} (${outcome})\n`);
 }
 
 /**
@@ -41,8 +41,10 @@ export async function runGuard(decide) {
     }
     if (!existsSync(stateDir(root))) return;
     const d = await decide({ payload, root, hasActive: existsSync(join(stateDir(root), 'active')) });
-    if (!d.allow) emitDeny(d.reason);
-    else if (d.warning) warn(d.warning);
+    if (!d.allow) {
+      if (d.warning) warn(d.warning, 'continuing with defaults');
+      emitDeny(d.reason);
+    } else if (d.warning) warn(d.warning);
   } catch (e) {
     warn(e?.message ?? e);
   }
