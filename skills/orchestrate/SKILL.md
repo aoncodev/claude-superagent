@@ -15,7 +15,7 @@ You are the orchestrator. Work through the phases in order. On resume, enter at 
 - Run `superagent status` to see what needs the user. `superagent show --json` (`run`, `tickets[].status`, `lastReports`) is the truth. Never read worker transcripts, and never parse a worker's final message.
 - Never edit `.superagent/runs/` by hand (hooks deny it). Your scratch files go in `.superagent/drafts/<run-id>/`.
 - Never push, deploy, publish, touch production, or merge into the user's base branch, unless the Charter's allowed actions list it.
-- Call the CLI as `superagent <cmd>`. Exit codes: 0 ok; 1 usage or validation (fix the input, rerun); 2 state (no or unreadable run); 3 refusal or conflict (its message says what to do).
+- Call the CLI as `superagent <cmd>`, from the main checkout: orchestrator commands refuse inside a worker worktree. Exit codes: 0 ok; 1 usage or validation (fix the input, rerun); 2 state (no or unreadable run); 3 refusal (wrong phase or state) or conflict; its message says what to do.
 - AskUserQuestion, SendMessage and ListAgents may be deferred tools. Load them with ToolSearch (for example `select:SendMessage`) before first use. Ask one question per call, the most blocking first.
 - Agent calls run in the background. They return the agent id immediately, and a completion notification arrives when the agent ends. Never wait, sleep or poll. When nothing else can be done until a notification arrives, end your turn without a progress message (say nothing; `/superagent:status` is how the user checks progress).
 - If the user changes the idea mid-run, write their new words to `.superagent/drafts/<run-id>/idea.md`, then run `superagent revise-charter <that file>`. Show `superagent show --charter`, and after they approve run `superagent approve`.
@@ -38,7 +38,7 @@ Read `proposal-format.md` (next to this file) for the schema, the rules and a wo
 
 - `charter.idea` holds the user's words **verbatim**. Never paraphrase, summarise or tidy them.
 - `out_of_scope` names nearby things the idea does not ask for. `allowed_actions` lists only outward actions the user explicitly asked for, usually none (`[]`).
-- For a new project, wave 0 is one scaffold ticket on its own. Next comes one contracts ticket: the API description, schema or migrations, shared types, env var names and folder layout.
+- For a new project, wave 0 is exactly one scaffold ticket, on its own and before every other wave. Next comes one contracts ticket: the API description, schema or migrations, shared types, env var names and folder layout.
 - Shared files (manifests, lockfiles, root config, route registries, CI files) belong to the scaffold or contracts ticket.
 - Scopes state outcomes, not steps. `done_when` uses parallel-safe checks only.
 - Tickets in one wave never share owned paths. Put dependent work in a later wave, and everything else in the same wave. Aim for about 5–12 tickets.
@@ -63,7 +63,7 @@ Repeat until `superagent next-wave` prints `none`. Run `superagent show --json` 
    - `subagent_type: "superagent:worker"`, `isolation: "worktree"`, `description: "<T> <title>"`;
    - `model` only when config `worker_model` is set and is not `inherit`;
    - `prompt`: exactly `Run id: <run-id>` and `Ticket: <T>`, on two lines. Never summarise or restate the Charter or the ticket: the worker gets both verbatim from `superagent brief`. One exception: when relaunching a ticket whose `tickets[].branch` is already set, add a third line, `Earlier attempt's branch: <branch> (merge it into yours first to keep its commits)`.
-3. Run `superagent set-agent <T> --agent <agentId>` for each returned id. If it refuses because the worker has already reported, go on.
+3. Run `superagent set-agent <T> --agent <agentId>` for each returned id, even if the worker has already reported.
 4. If an Agent call fails with "Cannot create agent worktree", the session started before the folder was a git repository. Do not retry, and never launch a worker without isolation. Tell the user to restart Claude Code in this folder and run /superagent:resume, then stop.
 
 **b. A worker finished.** Run `superagent show --json`, then read the ticket's `status` and `lastReports.<T>`. Each time a slot frees, launch the next `planned` ticket of the wave (4a).
@@ -121,7 +121,7 @@ Then run `superagent next-wave`. If it prints `wave <n>`, go back to 4a. If it p
 
 ## 7. Final report
 
-Run `superagent finish`, unless the run stopped in `merging`. Then run `git worktree list`. Send one short report that leads with outcomes:
+Run `superagent finish`, unless the run stopped in `merging`. It refuses until this pass's `verify-result` (and, from `reviewing`, a review) is recorded, and prints both. Then run `git worktree list`. Send one short report that leads with outcomes:
 - What was built, as the Charter items that are met.
 - Merge and verification results: the commands run, passed or failed.
 - Charter fidelity: what is unmet, the extras, and any contradictions.

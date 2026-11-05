@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { makeRepo, runCli } from './helpers.mjs';
+import { makeRepo, runCli, setPhase } from './helpers.mjs';
 import {
   activeRunId, charterPath, loadRun, loadTickets, saveRun, saveTicket, stateDir,
 } from '../lib/state.mjs';
@@ -109,9 +109,9 @@ test('start-ticket refuses a ticket outside current_wave', () => {
 
 test('start-ticket refuses outside the running phase and for unknown tickets', () => {
   const { root, id } = setup();
-  assert.equal(runCli(['phase', 'merging'], { cwd: root }).code, 0);
+  setPhase(root, 'merging');
   assert.equal(start(root, 'T1').code, 3);
-  assert.equal(runCli(['phase', 'running'], { cwd: root }).code, 0);
+  setPhase(root, 'running');
   assert.equal(start(root, 'T9').code, 1);
   assert.equal(runCli(['start-ticket', 'T1', '--agent'], { cwd: root }).code, 1);
   assert.equal(ticket(root, id, 'T1').attempts, 0);
@@ -417,4 +417,36 @@ test('an invalid fix ticket does not consume the fix wave budget', () => {
   const { root, id } = setup();
   assert.equal(addTicket(root, ticketJson({ id: 'T4', wave: 3, owns: [] }), 'fix').code, 1);
   assert.equal(loadRun(root, id).fix_waves_used.fix, 0);
+});
+
+// ---- final review: CLI consistency ----
+
+test('regression #7: set-agent records the agent of the current attempt even after the worker reported', () => {
+  const { root, id } = setup();
+  assert.equal(runCli(['set-agent', 'T1', '--agent', 'a'], { cwd: root }).code, 3, 'planned: no attempt yet');
+  // a fast worker reports blocked before the orchestrator records its id
+  assert.equal(runCli(['start-ticket', 'T1'], { cwd: root }).code, 0);
+  assert.equal(runCli(['report', 'T1', '--file', writeJson(root, 'b.json', blockedReport())], { cwd: root }).code, 0);
+  const r = runCli(['set-agent', 'T1', '--agent', 'fast'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(ticket(root, id, 'T1').agent_id, 'fast');
+  assert.equal(ticket(root, id, 'T1').status, 'blocked');
+  // and after a failed report
+  assert.equal(runCli(['start-ticket', 'T2'], { cwd: root }).code, 0);
+  const failed = readyReport({ status: 'failed', commits: [], progress: 'Half done.' });
+  assert.equal(runCli(['report', 'T2', '--file', writeJson(root, 'T2.json', failed)], { cwd: root }).code, 0);
+  assert.equal(runCli(['set-agent', 'T2', '--agent', 'late'], { cwd: root }).code, 0);
+  assert.equal(ticket(root, id, 'T2').agent_id, 'late');
+  saveTicket(root, id, { ...ticket(root, id, 'T2'), status: 'merged' });
+  assert.equal(runCli(['set-agent', 'T2', '--agent', 'x'], { cwd: root }).code, 3, 'merged tickets are settled');
+});
+
+test('regression #10: add-ticket requires a wave after the current wave', () => {
+  const { root, id } = setup();
+  assert.equal(loadRun(root, id).current_wave, 1);
+  const r = addTicket(root, ticketJson({ id: 'T4', kind: 'work', wave: 1, owns: ['src/late/'] }), 'handback');
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /current wave/);
+  assert.equal(ticket(root, id, 'T4'), undefined);
+  assert.equal(addTicket(root, ticketJson({ id: 'T4', kind: 'work', wave: 2, owns: ['src/late/'] }), 'handback').code, 0);
 });

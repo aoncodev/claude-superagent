@@ -214,3 +214,18 @@ test('renderCharter keeps the idea byte-identical and parseCharter round-trips',
   assert.deepEqual(back.allowed_actions, ['push', 'deploy']);
   assert.deepEqual(parseCharter(renderCharter({ ...spec, allowed_actions: [] })).allowed_actions, []);
 });
+
+test('regression #11: a new project needs exactly one scaffold ticket, in the lowest wave', () => {
+  const project = { kind: 'new', stack: 'node', setup: [], checks: [], integration_checks: [] };
+  const scaffold = (id, wave) => ({ id, title: 'Scaffold', kind: 'scaffold', wave, scope: 'Init', owns: [`${id}/`], reads: [], contracts: [], done_when: [] });
+  let p = basePlan({ project });
+  assert.ok(has(errs(p), /new.*exactly one scaffold ticket.*found 0/), 'no scaffold');
+  p = basePlan({ project });
+  p.tickets.unshift(scaffold('T0', 0));
+  assert.deepEqual(errs(p), []);
+  p.tickets.unshift(scaffold('T9', 3));
+  assert.ok(has(errs(p), /exactly one scaffold ticket.*found 2/), 'two scaffolds');
+  p = basePlan({ project });
+  p.tickets.push(scaffold('T0', 5));
+  assert.ok(has(errs(p), /T0: scaffold ticket must be in the lowest wave/), 'scaffold after other work');
+});

@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { activeRunId, loadRun, saveRun } from '../lib/state.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const CLI = join(ROOT, 'bin', 'superagent.mjs');
@@ -41,4 +42,11 @@ export function runCli(args, { cwd, input } = {}) {
 /** Run a hook script with a JSON payload on stdin. */
 export function runHook(script, payload) {
   return run(script, [], { input: JSON.stringify(payload) });
+}
+
+/** Test-only shortcut: set a run's phase by rewriting run.json directly. The CLI has no such command. */
+export function setPhase(root, phase, id = activeRunId(root)) {
+  const run = loadRun(root, id);
+  run.phase = phase;
+  saveRun(root, run);
 }

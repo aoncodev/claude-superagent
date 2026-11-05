@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFil
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { makeRepo, runCli } from './helpers.mjs';
+import { makeRepo, runCli, setPhase } from './helpers.mjs';
 import { hasHead } from '../lib/git.mjs';
 import { activeRunId, loadRun, saveTicket, charterPath, stateDir } from '../lib/state.mjs';
 
@@ -73,28 +73,29 @@ test('approve with no active run exits 2', () => {
   assert.match(r.stderr, /no active run/);
 });
 
-test('approve refuses when phase is not awaiting_approval', () => {
+test('approve refuses when phase is not awaiting_approval (exit 3, #9)', () => {
   const root = makeRepo();
   initRun(root);
   const r = runCli(['approve'], { cwd: root });
-  assert.equal(r.code, 1);
+  assert.equal(r.code, 3);
   assert.match(r.stderr, /awaiting_approval/);
 });
 
-test('phase validates against the phase enum', () => {
+test('regression #4: there is no `phase` command to jump the state machine', () => {
   const root = makeRepo();
   const id = initRun(root);
-  assert.equal(runCli(['phase', 'bogus'], { cwd: root }).code, 1);
-  assert.equal(runCli(['phase'], { cwd: root }).code, 1);
-  assert.equal(runCli(['phase', 'running'], { cwd: root }).code, 0);
-  assert.equal(loadRun(root, id).phase, 'running');
+  const r = runCli(['phase', 'running'], { cwd: root });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /unknown command: phase/);
+  assert.doesNotMatch(r.stderr, /commands:.*\bphase\b/);
+  assert.equal(loadRun(root, id).phase, 'proposing');
 });
 
 test('approve refuses on a dirty tree and lists the dirty files', () => {
   const root = makeRepo();
   initRun(root);
   writeFileSync(join(root, 'a.txt'), 'x');
-  assert.equal(runCli(['phase', 'awaiting_approval'], { cwd: root }).code, 0);
+  setPhase(root, 'awaiting_approval');
   const r = runCli(['approve'], { cwd: root });
   assert.equal(r.code, 3);
   assert.match(r.stdout, /a\.txt/);
@@ -105,7 +106,7 @@ test('approve refuses on a dirty tree and lists the dirty files', () => {
 test('approve with a missing charter file exits 2 naming the file', () => {
   const root = makeRepo();
   initRun(root);
-  runCli(['phase', 'awaiting_approval'], { cwd: root });
+  setPhase(root, 'awaiting_approval');
   const r = runCli(['approve'], { cwd: root });
   assert.equal(r.code, 2);
   assert.match(r.stderr, /charter\.r1\.md/);
@@ -117,7 +118,7 @@ test('approve on a clean tree freezes the charter', () => {
   const run0 = loadRun(root, id);
   const charter = '# Charter\n\nBuild it.\n';
   writeFileSync(charterPath(root, run0), charter);
-  assert.equal(runCli(['phase', 'awaiting_approval'], { cwd: root }).code, 0);
+  setPhase(root, 'awaiting_approval');
   const head = sh(root, ['rev-parse', 'HEAD']);
   const r = runCli(['approve'], { cwd: root });
   assert.equal(r.code, 0, r.stderr);
@@ -140,7 +141,7 @@ test('approve sets current_wave to the lowest ticket wave', () => {
   for (const [tid, wave] of [['T1', 2], ['T2', 1], ['T3', 3]]) {
     saveTicket(root, id, { id: tid, title: tid, kind: 'work', wave, status: 'planned' });
   }
-  runCli(['phase', 'awaiting_approval'], { cwd: root });
+  setPhase(root, 'awaiting_approval');
   assert.equal(runCli(['approve'], { cwd: root }).code, 0);
   assert.equal(loadRun(root, id).current_wave, 1);
 });
@@ -149,7 +150,7 @@ test('approve works from inside a subdirectory and honours --run', () => {
   const root = makeRepo();
   const id = initRun(root);
   writeFileSync(charterPath(root, loadRun(root, id)), '# c\n');
-  runCli(['phase', 'awaiting_approval', '--run', id], { cwd: root });
+  setPhase(root, 'awaiting_approval', id);
   mkdirSync(join(root, 'sub'));
   assert.equal(runCli(['approve', '--run', id], { cwd: join(root, 'sub') }).code, 0);
   assert.equal(loadRun(root, id).phase, 'running');
@@ -159,7 +160,7 @@ test('abort sets phase aborted, clears active, and leaves branches untouched', (
   const root = makeRepo();
   const id = initRun(root);
   writeFileSync(charterPath(root, loadRun(root, id)), '# c\n');
-  runCli(['phase', 'awaiting_approval'], { cwd: root });
+  setPhase(root, 'awaiting_approval');
   runCli(['approve'], { cwd: root });
   const branchesBefore = sh(root, ['branch', '--list']);
   const r = runCli(['abort'], { cwd: root });
@@ -241,4 +242,80 @@ test('abort clears a stale active pointer to a run that does not exist', () => {
   const r = runCli(['abort'], { cwd: root });
   assert.equal(r.code, 0, r.stderr);
   assert.equal(activeRunId(root), null);
+});
+
+// ---- final review: CLI consistency ----
+
+test('regression #9: abort of a finished run is a refusal (exit 3)', () => {
+  const root = makeRepo();
+  const id = initRun(root);
+  setPhase(root, 'done');
+  const r = runCli(['abort', '--run', id], { cwd: root });
+  assert.equal(r.code, 3);
+  assert.match(r.stderr, /already done/);
+});
+
+test('regression #6: show --run prints only the run object, never tickets or reports', () => {
+  const root = makeRepo();
+  const id = initRun(root, 'Show Run');
+  saveTicket(root, id, { id: 'T1', title: 'secret ticket', kind: 'work', wave: 1, status: 'planned' });
+  const r = runCli(['show', '--run'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  const data = JSON.parse(r.stdout);
+  assert.equal(data.id, id);
+  assert.equal(data.phase, 'proposing');
+  assert.ok(!('tickets' in data) && !('lastReports' in data));
+  assert.doesNotMatch(r.stdout, /secret ticket/);
+  assert.equal(runCli(['show', '--run', '--json'], { cwd: root }).code, 1);
+  assert.equal(runCli(['show', '--run', '--charter'], { cwd: root }).code, 1);
+  // --run <id> still selects a run
+  assert.equal(JSON.parse(runCli(['show', '--run', id, '--json'], { cwd: root }).stdout).run.id, id);
+});
+
+/** An approved run with a worker worktree for T1 (the orchestrator-only commands are tried from there). */
+function approvedWithWorktree() {
+  const root = makeRepo();
+  const id = initRun(root);
+  const drafts = join(stateDir(root), 'drafts');
+  mkdirSync(drafts, { recursive: true });
+  writeFileSync(join(drafts, 'plan.json'), JSON.stringify({
+    title: 't', charter: { idea: 'i', in_scope: [], out_of_scope: [], allowed_actions: [] },
+    project: { kind: 'existing', stack: null, setup: [], checks: [], integration_checks: [] }, contracts: [],
+    tickets: [{ id: 'T1', title: 'a', kind: 'work', wave: 1, scope: 'x', owns: ['a/'], reads: [], contracts: [], done_when: ['ok'] }],
+  }));
+  assert.equal(runCli(['propose', join(drafts, 'plan.json')], { cwd: root }).code, 0);
+  assert.equal(runCli(['approve'], { cwd: root }).code, 0);
+  assert.equal(runCli(['start-ticket', 'T1'], { cwd: root }).code, 0);
+  const wt = join(root, '.claude', 'worktrees', 'agent-x');
+  sh(root, ['worktree', 'add', '-q', '-b', 'worktree-agent-x', wt]);
+  return { root, id, wt, drafts };
+}
+
+test('regression #4: orchestrator-only commands refuse with exit 3 inside a linked worktree', () => {
+  const { root, id, wt, drafts } = approvedWithWorktree();
+  const f = join(drafts, 'plan.json');
+  const cmds = [
+    ['init', '--title', 'x'], ['approve'], ['propose', f], ['revise-charter', f], ['start-ticket', 'T1'], ['set-agent', 'T1', '--agent', 'z'],
+    ['answer', 'T1', '--text', 'x'], ['add-ticket', '--origin', 'handback', '--file', f], ['merge', 'T1'], ['merge-continue'], ['merge-abort', 'T1'],
+    ['next-wave'], ['verify-result', '--passed', 'true'], ['review', '--file', f], ['finish'], ['abort'], ['mark-failed', 'T1', '--reason', 'x'],
+  ];
+  const before = readFileSync(join(stateDir(root), 'runs', id, 'run.json'), 'utf8');
+  for (const args of cmds) {
+    for (const cwd of [wt, join(wt, 'a')]) {
+      mkdirSync(join(wt, 'a'), { recursive: true });
+      const r = runCli(args, { cwd });
+      assert.equal(r.code, 3, `${args[0]} from ${cwd}: ${r.stderr}`);
+      assert.match(r.stderr, /worktree/, args[0]);
+    }
+  }
+  assert.equal(readFileSync(join(stateDir(root), 'runs', id, 'run.json'), 'utf8'), before);
+  assert.equal(activeRunId(root), id);
+  // worker-usable commands still work from the worktree
+  for (const args of [['claim', 'T1'], ['brief', 'T1'], ['show'], ['show', '--run'], ['status'], ['proposal'], ['check-diff', 'T1']]) {
+    const r = runCli(args, { cwd: wt });
+    assert.equal(r.code, 0, `${args.join(' ')}: ${r.stderr}`);
+  }
+  // and the orchestrator commands still work from the main checkout (and its subdirectories)
+  mkdirSync(join(root, 'sub'), { recursive: true });
+  assert.equal(runCli(['set-agent', 'T1', '--agent', 'z'], { cwd: join(root, 'sub') }).code, 0);
 });

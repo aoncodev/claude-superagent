@@ -43,7 +43,7 @@ Plan = {
 - ids match `T<n>` / `C<n>` and are unique; every ticket contract id exists in `contracts`.
 - `owns` is non-empty, repo-relative, no `*` or `?`.
 - Tickets in the same wave never have overlapping `owns` (`api/` overlaps `api/src/x.ts`).
-- A `scaffold` ticket is only allowed when `project.kind` is `"new"`, and it is alone in its wave.
+- A `scaffold` ticket is only allowed when `project.kind` is `"new"`, and it is alone in its wave. A `"new"` project has exactly one scaffold ticket, in the lowest wave.
 - Every `work` and `fix` ticket's wave is strictly greater than every `contracts` ticket's wave.
 - `allowed_actions` only from push, deploy, publish, production.
 

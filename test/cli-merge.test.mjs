@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { makeRepo, runCli } from './helpers.mjs';
+import { makeRepo, runCli, setPhase } from './helpers.mjs';
 import { activeRunId, loadEvents, loadRun, loadTickets, stateDir } from '../lib/state.mjs';
 
 const sh = (cwd, args) => {
@@ -122,7 +122,7 @@ test('merge refuses when the integration branch is not checked out', () => {
 test('merge refuses outside running/merging phase', () => {
   const { root, wt } = setup();
   report(root, 'T1', wt.T1);
-  assert.equal(runCli(['phase', 'verifying'], { cwd: root }).code, 0);
+  setPhase(root, 'verifying');
   assert.equal(runCli(['merge', 'T1'], { cwd: root }).code, 3);
 });
 
@@ -262,9 +262,9 @@ test('next-wave with nothing planned sets phase verifying', () => {
 
 test('next-wave requires phase running, or verifying/reviewing with planned tickets', () => {
   const { root } = setup();
-  runCli(['phase', 'merging'], { cwd: root });
+  setPhase(root, 'merging');
   assert.equal(runCli(['next-wave'], { cwd: root }).code, 3);
-  runCli(['phase', 'awaiting_approval'], { cwd: root });
+  setPhase(root, 'awaiting_approval');
   assert.equal(runCli(['next-wave'], { cwd: root }).code, 3);
 });
 
@@ -274,7 +274,7 @@ function afterLastWave(phase) {
   report(root, 'T1', wt.T1);
   report(root, 'T2', wt.T2);
   for (const t of ['T1', 'T2']) assert.equal(runCli(['merge', t], { cwd: root }).code, 0);
-  assert.equal(runCli(['phase', phase], { cwd: root }).code, 0);
+  setPhase(root, phase);
   return { root, id };
 }
 
@@ -300,14 +300,14 @@ test('next-wave from verifying or reviewing with nothing planned is refused', ()
   assert.equal(r.code, 3);
   assert.match(r.stderr, /no ticket is planned/);
   assert.equal(loadRun(root, id).phase, 'reviewing');
-  runCli(['phase', 'verifying'], { cwd: root });
+  setPhase(root, 'verifying');
   assert.equal(runCli(['next-wave'], { cwd: root }).code, 3);
 });
 
 test('verify-result passed moves to reviewing; failed stays in verifying', () => {
   const { root, id } = setup();
   assert.equal(runCli(['verify-result', '--passed', 'true'], { cwd: root }).code, 3, 'not verifying yet');
-  runCli(['phase', 'verifying'], { cwd: root });
+  setPhase(root, 'verifying');
   assert.equal(runCli(['verify-result', '--passed', 'maybe'], { cwd: root }).code, 1);
   assert.equal(runCli(['verify-result'], { cwd: root }).code, 1);
   const log = join(drafts(root), 'v.log');
@@ -324,7 +324,7 @@ test('verify-result passed moves to reviewing; failed stays in verifying', () =>
 
 test('review rejects a review missing extras', () => {
   const { root, id } = setup();
-  runCli(['phase', 'reviewing'], { cwd: root });
+  setPhase(root, 'reviewing');
   const bad = writeJson(root, 'review.json', { unmet: [], contradictions: [] });
   const r = runCli(['review', '--file', bad], { cwd: root });
   assert.equal(r.code, 1);
@@ -337,7 +337,7 @@ test('review rejects a review missing extras', () => {
 test('review writes reviews/<n>.json with increasing n and an event', () => {
   const { root, id } = setup();
   assert.equal(runCli(['review', '--file', writeJson(root, 'r.json', { unmet: [], extras: [], contradictions: [] })], { cwd: root }).code, 3, 'not reviewing yet');
-  runCli(['phase', 'reviewing'], { cwd: root });
+  setPhase(root, 'reviewing');
   const good = writeJson(root, 'r.json', { unmet: [{ item: 'login', evidence: 'no route' }], extras: [], contradictions: [] });
   assert.equal(runCli(['review', '--file', good], { cwd: root }).code, 0);
   assert.equal(runCli(['review', '--file', good], { cwd: root }).code, 0);
@@ -350,14 +350,17 @@ test('review writes reviews/<n>.json with increasing n and an event', () => {
 test('finish is allowed from verifying or reviewing, sets done and clears active', () => {
   const { root, id } = setup();
   assert.equal(runCli(['finish'], { cwd: root }).code, 3, 'phase running');
-  runCli(['phase', 'verifying'], { cwd: root });
+  setPhase(root, 'verifying');
+  assert.equal(runCli(['verify-result', '--passed', 'false'], { cwd: root }).code, 0);
   assert.equal(runCli(['finish'], { cwd: root }).code, 0);
   assert.equal(loadRun(root, id).phase, 'done');
   assert.equal(activeRunId(root), null);
   assert.equal(events(root, id, 'finished').length, 1);
 
   const b = setup();
-  runCli(['phase', 'reviewing'], { cwd: b.root });
+  setPhase(b.root, 'verifying');
+  assert.equal(runCli(['verify-result', '--passed', 'true'], { cwd: b.root }).code, 0);
+  assert.equal(runCli(['review', '--file', writeJson(b.root, 'rv.json', { unmet: [], extras: [], contradictions: [] })], { cwd: b.root }).code, 0);
   assert.equal(runCli(['finish'], { cwd: b.root }).code, 0);
   assert.equal(loadRun(b.root, b.id).phase, 'done');
 });
@@ -482,4 +485,48 @@ test('regression #3: merge refuses a ready ticket whose branch has nothing beyon
   assert.equal(ticket(root, id, 'T1').status, 'ready');
   assert.equal(events(root, id, 'merged').length, 0);
   assert.equal(loadRun(root, id).phase, 'running');
+});
+
+// ---- final review: finish needs evidence ----
+
+test('regression #8: finish needs a recorded verification (and a review when reviewing), and prints both', () => {
+  const { root, id } = setup();
+  setPhase(root, 'verifying');
+  const none = runCli(['finish'], { cwd: root });
+  assert.equal(none.code, 3);
+  assert.match(none.stderr, /verify-result/);
+  assert.equal(loadRun(root, id).phase, 'verifying');
+
+  assert.equal(runCli(['verify-result', '--passed', 'true'], { cwd: root }).code, 0);
+  const noReview = runCli(['finish'], { cwd: root });
+  assert.equal(noReview.code, 3);
+  assert.match(noReview.stderr, /review/);
+  assert.equal(loadRun(root, id).phase, 'reviewing');
+
+  const rv = writeJson(root, 'rv.json', { unmet: [{ item: 'login', evidence: 'no route' }], extras: [], contradictions: [] });
+  assert.equal(runCli(['review', '--file', rv], { cwd: root }).code, 0);
+  const r = runCli(['finish'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /verification: passed/);
+  assert.match(r.stdout, /review 1: 1 unmet, 0 extras, 0 contradictions/);
+  assert.equal(loadRun(root, id).phase, 'done');
+});
+
+test('regression #8: a verification from before a fix wave does not count for the next verifying phase', () => {
+  const { root, id, wt } = setup();
+  report(root, 'T1', wt.T1);
+  report(root, 'T2', wt.T2);
+  for (const t of ['T1', 'T2']) assert.equal(runCli(['merge', t], { cwd: root }).code, 0);
+  assert.equal(runCli(['next-wave'], { cwd: root }).code, 0); // wave 2 (T3)
+  const f = join(stateDir(root), 'runs', id, 'tickets', 'T3.json');
+  writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, 'utf8')), status: 'dropped' }));
+  assert.equal(runCli(['next-wave'], { cwd: root }).code, 0); // verifying
+  assert.equal(runCli(['verify-result', '--passed', 'false'], { cwd: root }).code, 0);
+  const fix = writeJson(root, 'fix.json', { id: 'T4', title: 'Fix', kind: 'fix', wave: 3, scope: 'Fix it', owns: ['a/'], reads: [], contracts: [], done_when: ['ok'] });
+  assert.equal(runCli(['add-ticket', '--origin', 'fix', '--file', fix], { cwd: root }).code, 0);
+  assert.equal(runCli(['next-wave'], { cwd: root }).code, 0); // running, wave 3
+  writeFileSync(join(stateDir(root), 'runs', id, 'tickets', 'T4.json'), JSON.stringify({ ...ticket(root, id, 'T4'), status: 'dropped' }));
+  assert.equal(runCli(['next-wave'], { cwd: root }).code, 0); // verifying again
+  assert.equal(loadRun(root, id).phase, 'verifying');
+  assert.equal(runCli(['finish'], { cwd: root }).code, 3, 'the earlier verification was for the previous verifying phase');
 });

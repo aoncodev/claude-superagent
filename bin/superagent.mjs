@@ -5,13 +5,18 @@
 // To add a command group: create lib/commands/<group>.mjs exporting a map of
 // name -> handler(args, ctx), then add one line to GROUPS below.
 // A handler may set `handler.booleans = ['flag', ...]` to declare value-less flags.
-import { UsageError } from '../lib/errors.mjs';
+import { RefusalError, UsageError } from '../lib/errors.mjs';
 import { parseArgs, makeContext } from '../lib/cli.mjs';
+import { inLinkedWorktree } from '../lib/git.mjs';
 import runCommands from '../lib/commands/run.mjs';
 import planCommands from '../lib/commands/plan.mjs';
 import ticketCommands from '../lib/commands/ticket.mjs';
 import mergeCommands from '../lib/commands/merge.mjs';
 import reviewCommands from '../lib/commands/review.mjs';
+
+// Commands a worker (or the fidelity reviewer) may run. Every other command is the orchestrator's,
+// and is refused from inside a linked worktree, where workers live.
+const WORKER_COMMANDS = new Set(['claim', 'brief', 'report', 'show', 'status', 'proposal', 'check-diff']);
 
 const GROUPS = [
   runCommands,
@@ -28,6 +33,9 @@ async function main(argv) {
   const handler = commands[name];
   if (!handler) throw new UsageError(`unknown command: ${name}\ncommands: ${Object.keys(commands).sort().join(', ')}`);
   const args = parseArgs(rest, handler.booleans ?? []);
+  if (!WORKER_COMMANDS.has(name) && inLinkedWorktree(process.cwd())) {
+    throw new RefusalError(`refusing to run \`${name}\` from inside a linked worktree: it is an orchestrator command; run it from the main checkout`);
+  }
   await handler(args, makeContext(process.cwd()));
 }
 
