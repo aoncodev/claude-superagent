@@ -205,6 +205,7 @@ test('merge-continue refuses when no merge is in progress', () => {
 test('next-wave is refused while a ticket is blocked', () => {
   const { root, id, wt } = setup();
   report(root, 'T1', wt.T1);
+  assert.equal(runCli(['merge', 'T1'], { cwd: root }).code, 0);
   const f = writeJson(root, 'blocked.json', {
     status: 'blocked', summary: 'Stuck.', changed_files: [], branch: 'worktree-agent-T2', commits: [], checks: [], handbacks: [],
     progress: 'Half done.', question: { text: 'Which way?' },
@@ -214,6 +215,21 @@ test('next-wave is refused while a ticket is blocked', () => {
   assert.equal(r.code, 3);
   assert.match(r.stderr, /T2/);
   assert.equal(loadRun(root, id).current_wave, 1);
+});
+
+test('next-wave is refused while a ticket is ready but unmerged, naming it', () => {
+  const { root, id, wt } = setup();
+  report(root, 'T1', wt.T1);
+  report(root, 'T2', wt.T2);
+  assert.equal(runCli(['merge', 'T1'], { cwd: root }).code, 0);
+  const r = runCli(['next-wave'], { cwd: root });
+  assert.equal(r.code, 3);
+  assert.match(r.stderr, /T2/);
+  assert.doesNotMatch(r.stderr, /T1/);
+  assert.match(r.stderr, /merge/);
+  assert.equal(loadRun(root, id).current_wave, 1);
+  assert.equal(runCli(['merge', 'T2'], { cwd: root }).code, 0);
+  assert.equal(runCli(['next-wave'], { cwd: root }).code, 0);
 });
 
 test('next-wave advances to the next wave with planned tickets', () => {

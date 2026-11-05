@@ -51,3 +51,14 @@ test('merging with a conflict lists it; with no tickets the wave max is -', () =
   assert.match(lines[1], /conflict/);
   assert.match(lines[2], /wave 1\/-/);
 });
+
+test('Needs you groups all blocked tickets before all failed/dropped ones, merge conflict last', () => {
+  const out = renderStatus(
+    run({ phase: 'merging', merging_ticket: 'T9' }),
+    [tk('T1', 'failed'), tk('T2', 'blocked'), tk('T3', 'dropped'), tk('T4', 'blocked')],
+    { T2: { question: { text: 'Q2?' } }, T4: { question: { text: 'Q4?' } } },
+    [],
+  );
+  const items = out.split('\n').slice(1, -1).map((l) => l.match(/^- (T\d)/)[1]);
+  assert.deepEqual(items, ['T2', 'T4', 'T1', 'T3', 'T9']);
+});
