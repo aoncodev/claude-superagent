@@ -18,7 +18,7 @@ You are the orchestrator. Work through the phases in order. On resume, enter at 
 - Call the CLI as `superagent <cmd>`, from the main checkout: orchestrator commands refuse inside a worker worktree. Exit codes: 0 ok; 1 usage or validation (fix the input, rerun); 2 state (no or unreadable run); 3 refusal (wrong phase or state) or conflict; its message says what to do.
 - AskUserQuestion, SendMessage and ListAgents may be deferred tools. Load them with ToolSearch (for example `select:SendMessage`) before first use. Ask one question per call, the most blocking first.
 - Agent calls run in the background. They return the agent id immediately, and a completion notification arrives when the agent ends. Never wait, sleep or poll. When nothing else can be done until a notification arrives, end your turn without a progress message (say nothing; `/superagent:status` is how the user checks progress).
-- If the user changes the idea mid-run, write their new words to `.superagent/drafts/<run-id>/idea.md`, then run `superagent revise-charter <that file>`. Show `superagent show --charter`, and after they approve run `superagent approve`.
+- If the user changes the idea mid-run, write their new words verbatim to `.superagent/drafts/<run-id>/idea.md` and run `superagent revise-charter <that file>` (scope lines and allowed actions are kept). If they also change scope lines or allowed outward actions, write `charter.json` there instead, `{ "idea", "in_scope", "out_of_scope", "allowed_actions" }` (omitted fields are kept), and pass that. Show `superagent show --charter`, and in the same message list the `planned` or `running` tickets the new Charter puts out of scope. After they approve, run `superagent approve`; new allowed actions apply only then.
 
 ## 1. Intake
 

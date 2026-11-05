@@ -244,3 +244,51 @@ test('revise-charter on a finished run is refused', () => {
 function loadRunId(root) {
   return readdirSync(join(stateDir(root), 'runs'))[0];
 }
+
+// ---- final review: charter revision ----
+
+test('regression #5: revise-charter <file.json> replaces the idea, scope lines and allowed actions; actions apply only on approval', () => {
+  const { root, id, path } = setup();
+  runCli(['propose', path], { cwd: root });
+  runCli(['approve'], { cwd: root });
+  const file = join(dirname(path), 'charter2.json');
+  writeFileSync(file, JSON.stringify({ idea: 'Login, then 2FA.', in_scope: ['login form', '2FA'], out_of_scope: ['SSO', 'password reset'], allowed_actions: ['push'] }));
+  const r = runCli(['revise-charter', file], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  const r2 = readFileSync(join(runDirOf(root, id), 'charter.r2.md'), 'utf8');
+  assert.ok(r2.includes('## Idea (verbatim)\nLogin, then 2FA.\n\n## In scope\n- login form\n- 2FA\n\n## Out of scope\n- SSO\n- password reset\n'));
+  assert.match(r2, /## Allowed outward actions\npush — /);
+  let run = loadRun(root, id);
+  assert.equal(run.phase, 'awaiting_approval');
+  assert.deepEqual(run.allowed_actions, [], 'not allowed before the user approves the revision');
+  assert.equal(runCli(['approve'], { cwd: root }).code, 0);
+  run = loadRun(root, id);
+  assert.deepEqual(run.allowed_actions, ['push']);
+  assert.equal(run.phase, 'running');
+});
+
+test('regression #5: a JSON revision may give only some fields; the rest are kept', () => {
+  const { root, id, path } = setup();
+  runCli(['propose', path], { cwd: root });
+  runCli(['approve'], { cwd: root });
+  const file = join(dirname(path), 'charter2.json');
+  writeFileSync(file, JSON.stringify({ idea: 'Only the idea changes.', out_of_scope: [] }));
+  assert.equal(runCli(['revise-charter', file], { cwd: root }).code, 0);
+  const r2 = readFileSync(join(runDirOf(root, id), 'charter.r2.md'), 'utf8');
+  assert.ok(r2.includes('## In scope\n- login form\n\n## Out of scope\n- (none)\n'));
+  assert.match(r2, /## Allowed outward actions\nnone — /);
+});
+
+test('regression #5: an invalid JSON revision exits 1 and writes nothing', () => {
+  const { root, id, path } = setup();
+  runCli(['propose', path], { cwd: root });
+  runCli(['approve'], { cwd: root });
+  const file = join(dirname(path), 'charter2.json');
+  for (const bad of ['{ nope', '[]', JSON.stringify({ idea: '' }), JSON.stringify({ idea: 'x', allowed_actions: ['launch'] }), JSON.stringify({ idea: 'x', in_scope: 'all' })]) {
+    writeFileSync(file, bad);
+    const r = runCli(['revise-charter', file], { cwd: root });
+    assert.equal(r.code, 1, bad);
+  }
+  assert.ok(!existsSync(join(runDirOf(root, id), 'charter.r2.md')));
+  assert.equal(loadRun(root, id).phase, 'running');
+});
