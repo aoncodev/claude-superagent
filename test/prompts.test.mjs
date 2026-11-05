@@ -122,3 +122,9 @@ test('start command: "not a git repository" from status also means no active run
   const body = read('commands/start.md');
   assert.match(body, /not (?:inside )?a git repository/i, 'start.md must treat "not a git repository" as no active run');
 });
+
+test('orchestrate skill: waiting for workers ends the turn without a progress message', () => {
+  // E2E finding: the orchestrator ended each waiting turn with a progress line ("T3 is done. Wave 2 is still waiting...").
+  const body = read('skills/orchestrate/SKILL.md');
+  assert.match(body, /end your turn without a progress message/i);
+});
