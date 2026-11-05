@@ -54,6 +54,18 @@ function worktree(root, name) {
 }
 
 const ticket = (root, id, t) => loadTickets(root, id).find((x) => x.id === t);
+
+/** Claim a running ticket from a fresh worktree and commit one file under `dir`; returns the commit for a ready report. */
+function workIn(root, t, name, dir = 'src/api') {
+  const wt = worktree(root, name);
+  const c = runCli(['claim', t], { cwd: wt });
+  assert.equal(c.code, 0, c.stderr);
+  mkdirSync(join(wt, dir), { recursive: true });
+  writeFileSync(join(wt, dir, `${name}.js`), `${name}\n`);
+  sh(wt, ['add', '-A']);
+  sh(wt, ['commit', '-q', '-m', `work ${name}`]);
+  return { wt, commits: [sh(wt, ['rev-parse', 'HEAD'])], branch: `worktree-agent-${name}` };
+}
 const start = (root, t, agent = 'a1') => runCli(['start-ticket', t, '--agent', agent], { cwd: root });
 
 function readyReport(over = {}) {
@@ -270,7 +282,8 @@ test('report with an invalid report exits 1 and leaves the ticket running', () =
 test('report stores the report, sets the status and appends one handback event per handback', () => {
   const { root, id } = setup();
   start(root, 'T1');
-  const rep = readyReport({ handbacks: [{ need: 'a users table', reason: 'not owned' }, { need: 'a CI job', reason: 'outside scope' }] });
+  const { commits, branch } = workIn(root, 'T1', 'r1');
+  const rep = readyReport({ commits, branch, handbacks: [{ need: 'a users table', reason: 'not owned' }, { need: 'a CI job', reason: 'outside scope' }] });
   const r = runCli(['report', 'T1', '--file', writeJson(root, 'ok.json', rep)], { cwd: root });
   assert.equal(r.code, 0, r.stderr);
   assert.equal(r.stdout.trim(), 'ok');
@@ -303,7 +316,8 @@ test('report blocked then answer then start-ticket increments attempts to 2', ()
   assert.equal(t.status, 'running');
   assert.equal(t.agent_id, 'a2');
   // the second attempt's report goes to its own file
-  assert.equal(runCli(['report', 'T1', '--file', writeJson(root, 'r2.json', readyReport())], { cwd: root }).code, 0);
+  const { commits } = workIn(root, 'T1', 'a2');
+  assert.equal(runCli(['report', 'T1', '--file', writeJson(root, 'r2.json', readyReport({ commits }))], { cwd: root }).code, 0);
   assert.ok(existsSync(join(stateDir(root), 'runs', id, 'reports', 'T1-2.json')));
   assert.ok(existsSync(join(stateDir(root), 'runs', id, 'reports', 'T1-1.json')));
 });
@@ -322,7 +336,7 @@ test('show --json fills lastReports with the latest report per ticket', () => {
   runCli(['report', 'T1', '--file', writeJson(root, 'b.json', blockedReport())], { cwd: root });
   runCli(['answer', 'T1', '--text', 'sessions'], { cwd: root });
   start(root, 'T1');
-  const second = readyReport({ summary: 'Second attempt.' });
+  const second = readyReport({ summary: 'Second attempt.', commits: workIn(root, 'T1', 's2').commits });
   runCli(['report', 'T1', '--file', writeJson(root, 'r.json', second)], { cwd: root });
   const out = JSON.parse(runCli(['show', '--json'], { cwd: root }).stdout);
   assert.deepEqual(Object.keys(out.lastReports), ['T1']);

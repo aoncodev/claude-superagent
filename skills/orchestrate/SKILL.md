@@ -81,8 +81,8 @@ If SendMessage fails, launch a fresh worker for the ticket and record it with `s
 
 **d. Merge.** Wait until the wave is settled: no ticket in it is `running` or `blocked`. Then run `superagent merge <T>` for each `ready` ticket in ascending ticket number. The outcomes:
 - Exit 3 with conflicted files listed (the phase is now `merging`, and the main checkout is writable):
-  - if every listed file is a shared file (manifest, lockfile, root config, route registry, CI file), resolve it so both sides' changes survive, run `git add` on the files, then `superagent merge-continue`;
-  - otherwise, tell the user the ticket and the files, and stop the run here. `/superagent:resume` continues once they have resolved it.
+  - if every listed file is a shared file (manifest, lockfile, root config, route registry, CI file), resolve it so both sides' changes survive, run `git add` on the files, then `superagent merge-continue`. It refuses while conflict markers remain;
+  - otherwise, tell the user the ticket and the files, and stop the run here. `/superagent:resume` continues once they have resolved it, or once they choose to drop the merge: then run `superagent merge-abort <T>` (the ticket becomes `failed` with a handback, 4e).
 - Exit 3 saying the ticket failed the diff check: the ticket is now `failed` and the out-of-scope paths are printed. Treat this as a handback (4e).
 - Exit 3 saying the main checkout is not clean: run `git stash push -u -m "superagent: <run-id>"`, note it for the final report, then retry.
 - Exit 3 saying the integration branch is not checked out: run `git switch <run.integration_branch>`, then retry.
@@ -141,6 +141,7 @@ Run `superagent status` and `superagent show --json`. Then act on `run.phase`:
 - `merging`: run `git diff --name-only --diff-filter=U`.
   - If files are still conflicted, handle them as in 4d.
   - Once they are resolved (by you or the user), `git add` the resolved files and run `superagent merge-continue`.
+  - If it refuses because the ticket is not merged (the merge was aborted with git), or the user wants to drop it, run `superagent merge-abort <T>` and handle it as a handback (4e).
   - Then merge the wave's remaining `ready` tickets in ascending ticket number, and run `superagent next-wave`.
 - `verifying`: go to phase 5.
 - `reviewing`: go to phase 6.

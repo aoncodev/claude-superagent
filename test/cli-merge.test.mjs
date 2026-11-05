@@ -372,3 +372,114 @@ test('status prints the rendered status', () => {
   assert.equal(j.code, 0);
   assert.equal(JSON.parse(j.stdout).run.id, id);
 });
+
+// ---- final review: merge integrity ----
+
+test('regression #1: merge-continue after a manual `git merge --abort` refuses; nothing is marked merged', () => {
+  const { root, id } = conflictSetup();
+  assert.equal(runCli(['merge', 'T1'], { cwd: root }).code, 3);
+  sh(root, ['merge', '--abort']);
+  const r = runCli(['merge-continue'], { cwd: root });
+  assert.equal(r.code, 3, r.stdout);
+  assert.match(r.stderr, /not merged|merge-abort/);
+  assert.equal(ticket(root, id, 'T1').status, 'ready');
+  assert.equal(loadRun(root, id).merging_ticket, 'T1');
+  assert.equal(events(root, id, 'merged').length, 0);
+});
+
+test('regression #1: merge-continue refuses staged files that still hold conflict markers', () => {
+  const { root, id } = conflictSetup();
+  runCli(['merge', 'T1'], { cwd: root });
+  sh(root, ['add', 'a/file.txt']); // staged with <<<<<<< markers still in it
+  const r = runCli(['merge-continue'], { cwd: root });
+  assert.equal(r.code, 3);
+  assert.match(r.stdout + r.stderr, /conflict marker/);
+  assert.match(r.stdout + r.stderr, /a\/file\.txt/);
+  assert.ok(existsSync(join(root, '.git', 'MERGE_HEAD')), 'the merge is left in progress');
+  assert.equal(ticket(root, id, 'T1').status, 'ready');
+});
+
+test('merge-continue accepts a merge the user already committed by hand', () => {
+  const { root, id } = conflictSetup();
+  runCli(['merge', 'T1'], { cwd: root });
+  writeFileSync(join(root, 'a/file.txt'), 'resolved\n');
+  sh(root, ['add', 'a/file.txt']);
+  sh(root, ['commit', '-q', '--no-edit']);
+  const r = runCli(['merge-continue'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(ticket(root, id, 'T1').status, 'merged');
+});
+
+test('regression #1: merge-abort <T> aborts the merge, fails the ticket, records a handback and returns to running', () => {
+  const { root, id } = conflictSetup();
+  const before = sh(root, ['rev-parse', 'HEAD']);
+  assert.equal(runCli(['merge-abort', 'T1'], { cwd: root }).code, 3, 'no merge in progress yet');
+  runCli(['merge', 'T1'], { cwd: root });
+  assert.equal(runCli(['merge-abort', 'T2'], { cwd: root }).code, 3, 'T2 is not the merging ticket');
+  const r = runCli(['merge-abort', 'T1'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(!existsSync(join(root, '.git', 'MERGE_HEAD')));
+  assert.equal(sh(root, ['rev-parse', 'HEAD']), before);
+  assert.equal(readFileSync(join(root, 'a/file.txt'), 'utf8'), 'integration\n');
+  assert.equal(ticket(root, id, 'T1').status, 'failed');
+  const run = loadRun(root, id);
+  assert.equal(run.phase, 'running');
+  assert.equal(run.merging_ticket, null);
+  const hb = events(root, id, 'handback');
+  assert.equal(hb.at(-1).ticket, 'T1');
+  assert.equal(hb.at(-1).reason, 'merge aborted');
+  // the wave can now be settled: T2 merges, next-wave advances
+  assert.equal(runCli(['merge-abort', 'T1'], { cwd: root }).code, 3, 'nothing left to abort');
+});
+
+test('regression #1: merge-abort also recovers after a manual `git merge --abort`', () => {
+  const { root, id } = conflictSetup();
+  runCli(['merge', 'T1'], { cwd: root });
+  sh(root, ['merge', '--abort']);
+  const r = runCli(['merge-abort', 'T1'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(ticket(root, id, 'T1').status, 'failed');
+  assert.equal(loadRun(root, id).phase, 'running');
+});
+
+test('regression #3: a ready report whose branch has no commits beyond the integration branch is rejected', () => {
+  const { root, id, wt } = setup({ commit: false });
+  const f = writeJson(root, 'empty.json', {
+    status: 'ready', summary: 'Done.', changed_files: ['a/f.txt'], branch: 'worktree-agent-T1',
+    commits: [sh(wt.T1, ['rev-parse', 'HEAD'])], checks: [], handbacks: [],
+  });
+  const r = runCli(['report', 'T1', '--file', f], { cwd: wt.T1 });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /no commits/);
+  assert.equal(ticket(root, id, 'T1').status, 'running');
+  assert.ok(!existsSync(join(stateDir(root), 'runs', id, 'reports', 'T1-1.json')));
+});
+
+test('regression #3: a ready report listing a commit that is not on the ticket branch is rejected', () => {
+  const { root, id, wt } = setup();
+  const other = sh(wt.T2, ['rev-parse', 'HEAD']);
+  const f = writeJson(root, 'foreign.json', {
+    status: 'ready', summary: 'Done.', changed_files: [], branch: 'worktree-agent-T1',
+    commits: [sh(wt.T1, ['rev-parse', 'HEAD']), other], checks: [], handbacks: [],
+  });
+  const r = runCli(['report', 'T1', '--file', f], { cwd: wt.T1 });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, new RegExp(other.slice(0, 12)));
+  const bogus = writeJson(root, 'bogus.json', {
+    status: 'ready', summary: 'Done.', changed_files: [], branch: 'worktree-agent-T1', commits: ['deadbeef'], checks: [], handbacks: [],
+  });
+  assert.equal(runCli(['report', 'T1', '--file', bogus], { cwd: wt.T1 }).code, 1);
+  assert.equal(ticket(root, id, 'T1').status, 'running');
+});
+
+test('regression #3: merge refuses a ready ticket whose branch has nothing beyond the integration branch', () => {
+  const { root, id, wt } = setup();
+  report(root, 'T1', wt.T1);
+  sh(root, ['merge', '-q', '--no-ff', '--no-edit', 'worktree-agent-T1']); // merged by hand already
+  const r = runCli(['merge', 'T1'], { cwd: root });
+  assert.equal(r.code, 3);
+  assert.match(r.stderr, /no commits/);
+  assert.equal(ticket(root, id, 'T1').status, 'ready');
+  assert.equal(events(root, id, 'merged').length, 0);
+  assert.equal(loadRun(root, id).phase, 'running');
+});
