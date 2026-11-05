@@ -116,3 +116,9 @@ test('orchestrate skill: a repo created mid-session needs a restart before worke
   assert.match(body, /--git-init[^\n]*\n(?:[^\n]*\n){0,3}[^\n]*restart/i, 'after --git-init the skill must say to restart the session');
   assert.ok(body.includes('/superagent:resume'), 'the restart path continues with /superagent:resume');
 });
+
+test('start command: "not a git repository" from status also means no active run', () => {
+  // E2E finding: in an empty folder `superagent status` exits 1 (not a git repository), not 2.
+  const body = read('commands/start.md');
+  assert.match(body, /not (?:inside )?a git repository/i, 'start.md must treat "not a git repository" as no active run');
+});
