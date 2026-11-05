@@ -1,0 +1,12 @@
+{
+  "name": "superagent-local",
+  "owner": { "name": "Aon" },
+  "metadata": { "description": "Local marketplace for the superagent plugin." },
+  "plugins": [
+    {
+      "name": "superagent",
+      "source": "./",
+      "description": "Parallel worker subagents in git worktrees, with hook-enforced boundaries."
+    }
+  ]
+}
