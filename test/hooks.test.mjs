@@ -219,3 +219,18 @@ test('fix 7: from one worktree, writing into another worktree is denied', () => 
   allowed(runHook(FILES, payload(wt2, 'Write', { file_path: target, content: '' })));
   allowed(runHook(FILES, payload(root, 'Write', { file_path: target, content: '' })));
 });
+
+test('e2e fix: a worker may write its report under its own worktree .superagent/drafts/, not runs/ or another worktree', () => {
+  // E2E finding: Claude Code confines a worktree-isolated agent's Write tool to its worktree, so the
+  // report file must live in the worktree (git-ignored via the shared info/exclude).
+  const { root, wt } = setup();
+  const w = { agent_type: 'superagent:worker', agent_id: 'a1' };
+  allowed(runHook(FILES, payload(wt, 'Write', { file_path: join(wt, '.superagent/drafts/r1/T1-report.json'), content: '{}' }, w)));
+  allowed(runHook(FILES, payload(wt, 'Write', { file_path: '.superagent/drafts/r1/T1-report.json', content: '{}' }, w)));
+  denyReason(runHook(FILES, payload(wt, 'Write', { file_path: join(wt, '.superagent/runs/r1/run.json'), content: '{}' }, w)));
+  denyReason(runHook(FILES, payload(wt, 'Write', { file_path: join(wt, '.superagent/drafts/../x.json'), content: '{}' }, w)));
+  const wt2 = join(root, '.claude', 'worktrees', 'agent-b2');
+  sh(root, ['worktree', 'add', '-q', '-b', 'worker/t2', wt2]);
+  writeFileSync(join(root, '.superagent/runs/r1/tickets/T2.json'), JSON.stringify({ id: 'T2', wave: 1, owns: ['apps/api/'], status: 'running', worktree: wt2, branch: 'worker/t2' }));
+  assert.match(denyReason(runHook(FILES, payload(wt, 'Write', { file_path: join(wt2, '.superagent/drafts/r1/T2-report.json'), content: '{}' }, w))), /own worktree/);
+});

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { makeRepo, runCli } from './helpers.mjs';
 import {
   activeRunId, charterPath, loadRun, loadTickets, saveRun, saveTicket, stateDir,
@@ -240,13 +240,17 @@ test('brief starts with the verbatim charter and includes the previous question 
   assert.equal(b.stdout.trimEnd().split('\n').at(-1), `Report file: ${reportFile}`);
 });
 
-test('brief works from inside a worktree and points at the main checkout drafts', () => {
+test('brief from inside a worktree points at drafts in that worktree (the Write tool is confined to it)', () => {
   const { root, id } = setup();
   const wt = worktree(root, 'b');
   start(root, 'T1');
   const b = runCli(['brief', 'T1'], { cwd: wt });
   assert.equal(b.code, 0, b.stderr);
-  assert.equal(b.stdout.trimEnd().split('\n').at(-1), `Report file: ${join(root, '.superagent', 'drafts', id, 'T1-report.json')}`);
+  const file = join(wt, '.superagent', 'drafts', id, 'T1-report.json');
+  assert.equal(b.stdout.trimEnd().split('\n').at(-1), `Report file: ${file}`);
+  assert.ok(existsSync(dirname(file)), 'brief creates the worktree drafts directory');
+  const st = spawnSync('git', ['status', '--porcelain'], { cwd: wt, encoding: 'utf8' });
+  assert.ok(!st.stdout.includes('.superagent'), `worktree .superagent/ must be git-ignored: ${st.stdout}`);
 });
 
 test('report with an invalid report exits 1 and leaves the ticket running', () => {
