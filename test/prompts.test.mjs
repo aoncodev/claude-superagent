@@ -107,3 +107,12 @@ test('proposal-format.md: the example plan passes validatePlan', async () => {
   for (const t of example.tickets) waves.set(t.wave, (waves.get(t.wave) ?? 0) + 1);
   assert.ok([...waves.values()].filter((n) => n > 1).length >= 2, 'example has at least two parallel waves');
 });
+
+test('orchestrate skill: a repo created mid-session needs a restart before workers launch', () => {
+  // E2E finding: Claude Code decides at session start whether the folder is a git repository, so
+  // `isolation: "worktree"` fails with "Cannot create agent worktree" after `init --git-init`.
+  const body = read('skills/orchestrate/SKILL.md');
+  assert.ok(body.includes('Cannot create agent worktree'), 'SKILL.md must name the worktree-creation failure');
+  assert.match(body, /--git-init[^\n]*\n(?:[^\n]*\n){0,3}[^\n]*restart/i, 'after --git-init the skill must say to restart the session');
+  assert.ok(body.includes('/superagent:resume'), 'the restart path continues with /superagent:resume');
+});

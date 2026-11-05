@@ -25,6 +25,7 @@ You are the orchestrator. Work through the phases in order. On resume, enter at 
 1. The idea is the command's arguments, or the contents of the file they name. Keep its exact text.
 2. Run `superagent init --title "<short title>"` and note the run id it prints.
    - If it says the folder is not a git repository or has no commits, ask the user once whether to create one here. If they agree, rerun it with `--git-init`.
+     Claude Code checks for a git repository only when the session starts, so after `--git-init` worker worktrees cannot be created in this session. Do phases 2 and 3 now. Then, instead of phase 4, tell the user: "Restart Claude Code in this folder and run /superagent:resume to launch the workers." Stop there.
    - If it refuses because a run is active, stop and point the user to `/superagent:resume` or `/superagent:abort`.
 3. Discover the project:
    - Existing code: find the stack, the setup (install) command, the parallel-safe checks (unit tests, typecheck, lint, build), and the integration checks (e2e, real database, running services). Look in manifests, CI files, the README, CLAUDE.md and AGENTS.md. Use only commands the project defines.
@@ -63,6 +64,7 @@ Repeat until `superagent next-wave` prints `none`. Run `superagent show --json` 
    - `model` only when config `worker_model` is set and is not `inherit`;
    - `prompt`: exactly `Run id: <run-id>` and `Ticket: <T>`, on two lines. Never summarise or restate the Charter or the ticket: the worker gets both verbatim from `superagent brief`. One exception: when relaunching a ticket whose `tickets[].branch` is already set, add a third line, `Earlier attempt's branch: <branch> (merge it into yours first to keep its commits)`.
 3. Run `superagent set-agent <T> --agent <agentId>` for each returned id. If it refuses because the worker has already reported, go on.
+4. If an Agent call fails with "Cannot create agent worktree", the session started before the folder was a git repository. Do not retry, and never launch a worker without isolation. Tell the user to restart Claude Code in this folder and run /superagent:resume, then stop.
 
 **b. A worker finished.** Run `superagent show --json`, then read the ticket's `status` and `lastReports.<T>`. Each time a slot frees, launch the next `planned` ticket of the wave (4a).
 - `ready`: leave it for the merge (4d). Handle its `handbacks` (4e).
