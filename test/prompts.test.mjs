@@ -128,3 +128,37 @@ test('orchestrate skill: waiting for workers ends the turn without a progress me
   const body = read('skills/orchestrate/SKILL.md');
   assert.match(body, /end your turn without a progress message/i);
 });
+
+// ---- final review: prompts and README ----
+
+test('regression #6: the fidelity reviewer reads only the run object, never tickets or reports', () => {
+  const { body } = parse('fidelity-reviewer.md');
+  assert.ok(body.includes('superagent show --run'), 'reviewer uses `superagent show --run`');
+  assert.ok(!body.includes('show --json'), 'reviewer never runs `show --json` (it exposes tickets and worker summaries)');
+});
+
+test('T7: the worker runs every brief check, consistent with its rule on ready', () => {
+  const { body } = parse('worker.md');
+  assert.ok(body.includes('Run every brief check.'), 'worker.md says "Run every brief check."');
+  assert.ok(!/brief check that applies/.test(body));
+});
+
+test('regression #17: README states the diff-check gaps and how a fresh worker continues', () => {
+  const readme = read('README.md');
+  assert.match(readme, /git -C/, 'README names the `git -C <root> commit` bypass');
+  assert.match(readme, /main checkout/i);
+  assert.match(readme, /new worktree[^\n]*merges the earlier/i, 'a fresh worker gets a new worktree and merges the earlier branch');
+});
+
+test('skill and commands name only commands the CLI has', async () => {
+  const { execFileSync } = await import('node:child_process');
+  let listed = '';
+  try { execFileSync('node', [join(ROOT, 'bin', 'superagent.mjs')], { encoding: 'utf8', stdio: 'pipe' }); } catch (e) { listed = e.stderr; }
+  const cli = new Set(listed.split('commands: ')[1].trim().split(', '));
+  const files = ['skills/orchestrate/SKILL.md', 'agents/worker.md', 'agents/fidelity-reviewer.md', 'commands/start.md', 'commands/status.md', 'commands/resume.md', 'commands/abort.md', 'README.md'];
+  for (const f of files) {
+    for (const m of read(f).matchAll(/`superagent ([a-z][a-z-]+)/g)) {
+      assert.ok(cli.has(m[1]), `${f} mentions \`superagent ${m[1]}\`, which the CLI does not have`);
+    }
+  }
+});

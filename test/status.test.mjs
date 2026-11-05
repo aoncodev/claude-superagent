@@ -82,3 +82,16 @@ test('a failed ticket marked failed shows the reason of its latest ticket_failed
   assert.match(out, /- T3 failed: Newer report\./);
   assert.doesNotMatch(out, /old reason/);
 });
+
+test('regression #17: failed and dropped tickets need the user only while the wave is running or merging', () => {
+  const tickets = [tk('T1', 'failed'), tk('T2', 'dropped'), tk('T3', 'merged')];
+  for (const phase of ['running', 'merging']) {
+    const out = renderStatus(run({ phase }), tickets, {}, []);
+    assert.match(out, /- T1 failed/, phase);
+    assert.match(out, /- T2 dropped/, phase);
+  }
+  for (const phase of ['verifying', 'reviewing', 'done']) {
+    const out = renderStatus(run({ phase }), tickets, {}, []);
+    assert.equal(out.split('\n')[0], 'Nothing needs you.', phase);
+  }
+});

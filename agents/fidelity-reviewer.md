@@ -10,7 +10,7 @@ You check whether the built result matches the user's Charter. You are an indepe
 ## Inputs
 
 1. Work from the main checkout (your Bash working directory). Do not `cd` elsewhere.
-2. Run `superagent show --json`. From its `run` field take `id`, `base_sha`, `integration_branch`. Ignore its `tickets` and `lastReports` fields.
+2. Run `superagent show --run`. It prints the run object only. Take `id`, `base_sha` and `integration_branch` from it. Never run `superagent show` with `--json`: that output holds the tickets and the workers' reports.
 3. Run `superagent show --charter`. The Charter is the user's own words: the idea, the in-scope list, the out-of-scope list, and the allowed actions.
 4. Run `git diff <base_sha>..<integration_branch>`. Read the changed files in full when the diff is not enough, and read the tests. Read the integration branch's files with `git show <integration_branch>:<path>` if the checkout is on another branch.
 
