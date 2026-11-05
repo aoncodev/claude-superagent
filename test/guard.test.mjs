@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ACTIVE_PHASES, decideBash, decideFileWrite, pickWorktree } from '../lib/guard.mjs';
+import { decideBash, decideFileWrite, guarded, pickWorktree } from '../lib/guard.mjs';
 
 // A fake main checkout with a worker worktree living inside it, as in real runs.
 function fixture() {
@@ -17,12 +17,11 @@ function fixture() {
   const ticket = { id: 'T1', owns: ['apps/web/'], worktree: wtPath, status: 'running' };
   return { root, wtPath, worktree, main, ticket };
 }
-const run = (phase, extra = {}) => ({ id: 'r1', phase, allowed_actions: [], ...extra });
-const denied = (r) => { assert.equal(r.allow, false, 'expected deny'); return r.reason; };
-
-test('ACTIVE_PHASES lists the phases in which a run is live', () => {
-  assert.deepEqual(ACTIVE_PHASES, ['running', 'merging', 'verifying', 'reviewing']);
+// Before the first approval a run has no integration branch; afterwards it always has one.
+const run = (phase, extra = {}) => ({
+  id: 'r1', phase, allowed_actions: [], integration_branch: ['proposing', 'awaiting_approval'].includes(phase) ? null : 'superagent/r1', ...extra,
 });
+const denied = (r) => { assert.equal(r.allow, false, 'expected deny'); return r.reason; };
 
 // ---- decideFileWrite ----
 
@@ -43,10 +42,11 @@ test('rule 1: denied with no run at all, and via .. and mixed-case tricks', () =
   }
 });
 
-test('rule 1: allowed siblings (drafts, config) when no run is active', () => {
+test('rule 1: allowed siblings (drafts, look-alike names) when no run is active', () => {
   const f = fixture();
-  assert.deepEqual(decideFileWrite({ absPath: join(f.root, '.superagent/config.json'), root: f.root, run: null, tickets: [], worktree: f.main }), { allow: true });
+  assert.deepEqual(decideFileWrite({ absPath: join(f.root, '.superagent/drafts/r1/plan.json'), root: f.root, run: null, tickets: [], worktree: f.main }), { allow: true });
   assert.deepEqual(decideFileWrite({ absPath: join(f.root, '.superagent/runsabc/x'), root: f.root, run: null, tickets: [], worktree: f.main }), { allow: true });
+  assert.deepEqual(decideFileWrite({ absPath: join(f.root, '.superagent/config.json.bak'), root: f.root, run: null, tickets: [], worktree: f.main }), { allow: true });
 });
 
 test('drafts are writable in every phase, including running from a worker', () => {
@@ -402,4 +402,76 @@ test('fix 7: a worker may not write into another linked worktree', () => {
   assert.deepEqual(decideFileWrite({ ...base, cwdWorktree: worktree2 }), { allow: true });
   assert.deepEqual(decideFileWrite({ ...base, cwdWorktree: f.main }), { allow: true }); // orchestrator in the main checkout
   assert.deepEqual(decideFileWrite({ ...base, cwdWorktree: null }), { allow: true });
+});
+
+// ---- final review: guards ----
+
+test('regression #2: guarded() needs an integration branch and a phase other than done/aborted', () => {
+  assert.equal(guarded(null), false);
+  assert.equal(guarded(run('proposing')), false);
+  assert.equal(guarded(run('awaiting_approval')), false, 'first approval pending: nothing is running yet');
+  assert.equal(guarded(run('awaiting_approval', { integration_branch: 'superagent/r1' })), true, 'a revised charter awaiting re-approval');
+  for (const phase of ['running', 'merging', 'verifying', 'reviewing']) assert.equal(guarded(run(phase)), true, phase);
+  for (const phase of ['done', 'aborted']) assert.equal(guarded(run(phase)), false, phase);
+});
+
+test('regression #2: while a revised charter awaits re-approval every guard stays on', () => {
+  const f = fixture();
+  const revised = run('awaiting_approval', { integration_branch: 'superagent/r1' });
+  assert.match(denied(decideBash({ command: 'git push origin HEAD', run: revised, config: cfg })), /`push`/);
+  assert.match(denied(decideBash({ command: 'git clean -fdx', run: revised, config: cfg })), /git clean/);
+  denied(decideFileWrite({ absPath: join(f.wtPath, 'apps/api/evil.ts'), root: f.root, run: revised, tickets: [f.ticket], worktree: f.worktree, cwdWorktree: f.worktree }));
+  assert.deepEqual(decideFileWrite({ absPath: join(f.wtPath, 'apps/web/ok.ts'), root: f.root, run: revised, tickets: [f.ticket], worktree: f.worktree, cwdWorktree: f.worktree }), { allow: true });
+  // rule 5: workers may still be live, so the main checkout stays read-only, for the orchestrator too
+  assert.match(denied(decideFileWrite({ absPath: join(f.root, 'src/a.ts'), root: f.root, run: revised, tickets: [f.ticket], worktree: f.main, cwdWorktree: f.main })), /read-only/);
+});
+
+test('regression #4: file tools may not write .superagent/active or .superagent/config.json, with or without a run', () => {
+  const f = fixture();
+  for (const r of [null, run('proposing'), run('running'), run('done')]) {
+    for (const p of ['.superagent/active', '.superagent/config.json', '.SuperAgent/Config.json', '.superagent/drafts/../active']) {
+      assert.match(denied(decideFileWrite({ absPath: `${f.root}/${p}`, root: f.root, run: r, tickets: [], worktree: f.main })), /superagent CLI/, p);
+    }
+  }
+  // a worker's view of its own worktree copy is denied as well
+  denied(decideFileWrite({ absPath: join(f.wtPath, '.superagent/config.json'), root: f.root, run: run('running'), tickets: [f.ticket], worktree: f.worktree, cwdWorktree: f.worktree }));
+});
+
+test('regression #4: Bash writes to .superagent/active or .superagent/config.json are denied; reads and drafts are fine', () => {
+  const all = { allowed_actions: ['push', 'deploy', 'publish', 'production'] };
+  for (const c of [
+    'rm .superagent/active', 'rm -f /repo/.superagent/active', 'echo x > .superagent/active', 'echo other-run > /repo/.superagent/active',
+    'mv /tmp/c .superagent/config.json', "echo '{}' > .superagent/config.json", 'sed -i s/a/b/ .superagent/config.json', 'tee .superagent/config.json',
+    'cp /tmp/c .superagent/config.json', 'rm .superagent/a*', 'rm .superagent/c*', 'cd .superagent && rm active', 'truncate -s0 .superagent/config.json',
+  ]) {
+    assert.match(denied(decideBash({ command: c, run: run('running', all), config: cfg })), /superagent CLI/, c);
+    assert.match(denied(decideBash({ command: c, run: null, config: cfg })), /superagent CLI/, `${c} (no run)`);
+  }
+  for (const c of ['cat .superagent/active', 'cat .superagent/config.json', 'cp .superagent/config.json /tmp/c', 'echo x > .superagent/drafts/r/a', 'rm -rf .superagent/drafts/r1', 'ls .superagent/']) {
+    assert.deepEqual(decideBash({ command: c, run: run('running', all), config: cfg }), { allow: true }, c);
+  }
+});
+
+test('regression #14: a worker (cwd in a linked worktree) may not write into the main checkout in any guarded phase', () => {
+  const f = fixture();
+  const phases = [run('running'), run('merging'), run('verifying'), run('reviewing'), run('awaiting_approval', { integration_branch: 'superagent/r1' })];
+  for (const r of phases) {
+    const reason = denied(decideFileWrite({ absPath: join(f.root, 'src/a.ts'), root: f.root, run: r, tickets: [f.ticket], worktree: f.main, cwdWorktree: f.worktree }));
+    assert.match(reason, /own worktree|read-only/, r.phase);
+    // main-checkout drafts stay writable
+    assert.deepEqual(decideFileWrite({ absPath: join(f.root, '.superagent/drafts/r1/x.json'), root: f.root, run: r, tickets: [f.ticket], worktree: f.main, cwdWorktree: f.worktree }), { allow: true });
+  }
+  // the orchestrator in the main checkout may still resolve a merge
+  assert.deepEqual(decideFileWrite({ absPath: join(f.root, 'src/a.ts'), root: f.root, run: run('merging'), tickets: [f.ticket], worktree: f.main, cwdWorktree: f.main }), { allow: true });
+});
+
+test('T6: git stash -a/--all is denied while guarded; other stashes are fine', () => {
+  const all = ['push', 'deploy', 'publish', 'production'];
+  for (const c of ['git stash -a', 'git stash --all', 'git stash push -a', 'git stash push --all -m x', 'git stash save -a', 'git -C sub stash -a', 'cd x && git stash push -ka', 'git "stash" --all']) {
+    assert.match(denied(B(c, { allowed_actions: all })), /git stash/, c);
+  }
+  for (const c of ['git stash', 'git stash -u', 'git stash push -u -m "superagent: r1"', 'git stash pop', 'git stash apply', 'git stash list', 'git stash push -m all']) {
+    assert.deepEqual(B(c), { allow: true }, c);
+  }
+  assert.deepEqual(decideBash({ command: 'git stash -a', run: run('proposing'), config: cfg }), { allow: true });
 });

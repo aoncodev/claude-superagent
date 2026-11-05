@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlink
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { makeRepo, runHook } from './helpers.mjs';
+import { makeRepo, runCli, runHook } from './helpers.mjs';
 
 const PLUGIN = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const FILES = join(PLUGIN, 'hooks', 'guard-files.mjs');
@@ -25,7 +25,8 @@ function setup(phase = 'running', runExtra = {}) {
   const runDir = join(root, '.superagent', 'runs', 'r1');
   mkdirSync(join(runDir, 'tickets'), { recursive: true });
   writeFileSync(join(root, '.superagent', 'active'), 'r1\n');
-  writeFileSync(join(runDir, 'run.json'), JSON.stringify({ id: 'r1', title: 't', phase, allowed_actions: [], ...runExtra }));
+  const integration_branch = ['proposing', 'awaiting_approval'].includes(phase) ? null : 'superagent/r1';
+  writeFileSync(join(runDir, 'run.json'), JSON.stringify({ id: 'r1', title: 't', phase, allowed_actions: [], integration_branch, ...runExtra }));
   writeFileSync(join(runDir, 'tickets', 'T1.json'), JSON.stringify({ id: 'T1', wave: 1, owns: ['apps/web/'], status: 'running', worktree: wt, branch: 'worker/t1' }));
   return { root, wt, runDir };
 }
@@ -233,4 +234,55 @@ test('e2e fix: a worker may write its report under its own worktree .superagent/
   sh(root, ['worktree', 'add', '-q', '-b', 'worker/t2', wt2]);
   writeFileSync(join(root, '.superagent/runs/r1/tickets/T2.json'), JSON.stringify({ id: 'T2', wave: 1, owns: ['apps/api/'], status: 'running', worktree: wt2, branch: 'worker/t2' }));
   assert.match(denyReason(runHook(FILES, payload(wt, 'Write', { file_path: join(wt2, '.superagent/drafts/r1/T2-report.json'), content: '{}' }, w))), /own worktree/);
+});
+
+// ---- final review: guards, through the real CLI flow (reviewer probe) ----
+
+test('regression #2/#4/#14 (probe): guards hold through a merge conflict and a mid-run charter revision', () => {
+  const root = makeRepo();
+  assert.equal(runCli(['init', '--title', 'p'], { cwd: root }).code, 0);
+  const drafts = join(root, '.superagent', 'drafts');
+  mkdirSync(drafts, { recursive: true });
+  const t = (id, dir) => ({ id, title: id, kind: 'work', wave: 1, scope: 'x', owns: [`${dir}/`], reads: [], contracts: [], done_when: ['ok'] });
+  writeFileSync(join(drafts, 'plan.json'), JSON.stringify({
+    title: 'p', charter: { idea: 'i', in_scope: ['a'], out_of_scope: [], allowed_actions: [] },
+    project: { kind: 'existing', stack: null, setup: [], checks: [], integration_checks: [] }, contracts: [], tickets: [t('T1', 'a'), t('T2', 'b')],
+  }));
+  assert.equal(runCli(['propose', join(drafts, 'plan.json')], { cwd: root }).code, 0);
+  assert.equal(runCli(['approve'], { cwd: root }).code, 0);
+  assert.equal(runCli(['start-ticket', 'T1'], { cwd: root }).code, 0);
+  const wt = join(root, '.claude', 'worktrees', 'agent-T1');
+  sh(root, ['worktree', 'add', '-q', '-b', 'wa-T1', wt]);
+  assert.equal(runCli(['claim', 'T1'], { cwd: wt }).code, 0);
+  mkdirSync(join(wt, 'a'), { recursive: true });
+  writeFileSync(join(wt, 'a/f.txt'), 'T1\n');
+  sh(wt, ['add', '-A']); sh(wt, ['commit', '-qm', 't1']);
+  mkdirSync(join(root, 'a'), { recursive: true });
+  writeFileSync(join(root, 'a/f.txt'), 'int\n');
+  sh(root, ['add', '-A']); sh(root, ['commit', '-qm', 'int']);
+  writeFileSync(join(drafts, 'r.json'), JSON.stringify({ status: 'ready', summary: 'd', changed_files: [], branch: 'wa-T1', commits: [sh(wt, ['rev-parse', 'HEAD']).trim()], checks: [], handbacks: [] }));
+  assert.equal(runCli(['report', 'T1', '--file', join(drafts, 'r.json')], { cwd: wt }).code, 0);
+
+  const bash = (command, cwd) => runHook(BASH, payload(cwd, 'Bash', { command }));
+  const write = (file_path, cwd) => runHook(FILES, payload(cwd, 'Write', { file_path, content: 'x' }));
+
+  // #4: the active pointer and config are run state
+  denyReason(bash(`rm ${root}/.superagent/active`, wt));
+  denyReason(write(`${root}/.superagent/config.json`, wt));
+  denyReason(write(`${root}/.superagent/active`, root));
+
+  // #14: during a merge conflict the main checkout is writable for the orchestrator, not for a worker
+  assert.equal(runCli(['merge', 'T1'], { cwd: root }).code, 3);
+  assert.match(denyReason(write(`${root}/b/x.txt`, wt)), /own worktree/);
+  allowed(write(`${root}/a/f.txt`, root));
+  assert.equal(runCli(['merge-abort', 'T1'], { cwd: root }).code, 0);
+
+  // #2: a revised charter awaiting re-approval keeps every guard on
+  writeFileSync(join(drafts, 'idea.md'), 'new idea');
+  assert.equal(runCli(['revise-charter', join(drafts, 'idea.md')], { cwd: root }).code, 0);
+  assert.match(denyReason(bash('git push origin HEAD', wt)), /`push`/);
+  assert.match(denyReason(write(`${wt}/b/evil.txt`, wt)), /outside the paths/);
+  denyReason(write(`${root}/b/evil.txt`, wt));
+  assert.match(denyReason(write(`${root}/b/evil.txt`, root)), /read-only/);
+  allowed(write(`${wt}/a/ok.txt`, wt));
 });

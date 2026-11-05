@@ -36,7 +36,7 @@ Run state is kept in `.superagent/` in your project. It is added to `.git/info/e
 
 ## Configuration
 
-`.superagent/config.json` is optional:
+`.superagent/config.json` is optional. Write it yourself: the hooks treat it as run state, so Claude cannot edit it once `.superagent/` exists.
 
 ```json
 { "parallelism": 4, "production_markers": ["prod-db.example.com"], "worker_model": "inherit" }
@@ -50,7 +50,7 @@ Run state is kept in `.superagent/` in your project. It is added to `.git/info/e
 
 During a run, a Bash hook blocks `git push`, deploy commands (fly, railway, kubectl, helm, terraform, pulumi, serverless, firebase, heroku, `vercel --prod`, `docker push` and similar), publish commands (`npm publish`, `cargo publish`, `gh release create`, `eas submit` and similar), and commands that contain a production marker. It blocks them even with permission prompts bypassed. A run may perform one of these only if the approved Charter's `allowed_actions` lists it (`push`, `deploy`, `publish` or `production`). The orchestrator adds an action there only when your idea asks for it, and it appears in the proposal you approve. To allow one mid-run, change the idea. The Charter revision is shown to you for approval again.
 
-The other enforced rules are these. Workers may edit only their ticket's owned paths, inside their own worktree. The main checkout is read-only while a wave runs. Run state under `.superagent/runs/` changes only through the CLI. Before a merge, each branch's diff is checked against its owned paths.
+The other enforced rules are these. They hold from the first approval until the run is done or aborted, including while a revised Charter waits for your approval. Workers may edit only their ticket's owned paths, inside their own worktree, and never the main checkout. The main checkout is read-only while a wave runs or a revision waits for approval. Run state (`.superagent/runs/` and `.superagent/active`) changes only through the CLI, `.superagent/config.json` only by your hand, and `git clean -x` and `git stash -a` are blocked because they would remove them. Before a merge, each branch's diff is checked against its owned paths.
 
 ## Known limitations
 
@@ -59,6 +59,6 @@ The other enforced rules are these. Workers may edit only their ticket's owned p
 - **The approval and question screens must be checked by hand on first use.** The end-to-end runs were headless, with approval granted in the prompt. See `docs/e2e-checklist.md`.
 - **The outward-action guard matches text.** Quoted text is matched too, so `git commit -m "never git push"` is blocked. Commands behind `timeout` or behind uncommon `yarn` forms may not be recognised.
 - **Read-only redirects can be denied by mistake.** A redirect that only names a path inside `.superagent/runs/` is denied, even when nothing is written there.
-- **The guard is keyed on the session's working directory.** A session started outside the project's repository is not guarded. `git stash -a` and similar commands that delete ignored files are not blocked.
+- **The guard is keyed on the session's working directory.** A session started outside the project's repository is not guarded. Only `git clean -x` and `git stash -a/--all` are recognised as commands that delete ignored files; scripts that delete them some other way are not.
 - **A brand-new folder needs one restart.** Claude Code checks for a git repository only at session start. If the plugin creates the repository, it proposes the split and takes your approval, then asks you to restart Claude Code in the folder and run `/superagent:resume` to launch the workers.
 - Live subagents do not survive a new session. On resume, a `blocked` or lost worker is replaced by a fresh one, which starts from the ticket's worktree and its last report.

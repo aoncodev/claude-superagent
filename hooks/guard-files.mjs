@@ -2,7 +2,7 @@
 // PreToolUse guard for Write, Edit, MultiEdit and NotebookEdit. See lib/guard.mjs for the rules.
 import { isAbsolute, resolve } from 'node:path';
 import { listWorktrees } from '../lib/git.mjs';
-import { ACTIVE_PHASES, decideFileWrite, pickWorktree, resolveReal } from '../lib/guard.mjs';
+import { decideFileWrite, guarded, pickWorktree, resolveReal } from '../lib/guard.mjs';
 import { activeRunId, loadRun, loadTickets } from '../lib/state.mjs';
 import { runGuard } from './guard-common.mjs';
 
@@ -23,7 +23,7 @@ await runGuard(({ payload, root }) => {
     const id = activeRunId(root);
     if (id) {
       run = loadRun(root, id);
-      if (ACTIVE_PHASES.includes(run.phase)) {
+      if (guarded(run)) {
         tickets = loadTickets(root, id);
         const trees = listWorktrees(root);
         const realTrees = trees.map((t) => ({ ...t, path: resolveReal(t.path) }));
