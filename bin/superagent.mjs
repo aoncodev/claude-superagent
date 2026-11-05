@@ -9,10 +9,12 @@ import { UsageError } from '../lib/errors.mjs';
 import { parseArgs, makeContext } from '../lib/cli.mjs';
 import runCommands from '../lib/commands/run.mjs';
 import planCommands from '../lib/commands/plan.mjs';
+import ticketCommands from '../lib/commands/ticket.mjs';
 
 const GROUPS = [
   runCommands,
   planCommands,
+  ticketCommands,
 ];
 
 async function main(argv) {

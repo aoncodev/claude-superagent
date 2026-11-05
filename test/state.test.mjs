@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { makeRepo } from './helpers.mjs';
 import {
   StateError, stateDir, ensureStateDir, readConfig, createRun, activeRunId, loadRun, saveRun,
-  loadTickets, saveTicket, appendEvent, charterPath, readCharter,
+  loadTickets, saveTicket, appendEvent, charterPath, readCharter, writeReport, loadReport, loadLastReport, draftsDir,
 } from '../lib/state.mjs';
 import { mainRoot, worktreeContaining, dirtyFiles, diffNames, hasHead, git } from '../lib/git.mjs';
 
@@ -214,4 +214,19 @@ test('diffNames returns non-ASCII paths unquoted', () => {
   sh(root, ['add', '.']);
   sh(root, ['commit', '-q', '-m', 'n']);
   assert.deepEqual(diffNames(root, 'main', 'f').sort(), ['plain.txt', 'ü.txt']);
+});
+
+test('reports are stored per attempt and loadLastReport returns the highest attempt', () => {
+  const root = makeRepo();
+  const run = createRun(root, { title: 'Reports' });
+  assert.equal(loadLastReport(root, run.id, 'T1'), null);
+  writeReport(root, run.id, 'T1', 1, { status: 'blocked', n: 1 });
+  writeReport(root, run.id, 'T1', 10, { status: 'ready', n: 10 });
+  writeReport(root, run.id, 'T1', 2, { status: 'failed', n: 2 });
+  writeReport(root, run.id, 'T11', 3, { status: 'ready', n: 3 });
+  assert.equal(loadLastReport(root, run.id, 'T1').n, 10);
+  assert.equal(loadReport(root, run.id, 'T1', 2).n, 2);
+  assert.equal(loadReport(root, run.id, 'T1', 5), null);
+  assert.equal(loadLastReport(root, run.id, 'T11').n, 3);
+  assert.equal(draftsDir(root, run.id), join(stateDir(root), 'drafts', run.id));
 });
