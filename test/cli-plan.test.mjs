@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { makeRepo, runCli } from './helpers.mjs';
@@ -177,6 +178,46 @@ test('revise-charter after approve writes r2, keeps scope, and returns to awaiti
   assert.match(readFileSync(join(runDirOf(root, id), 'events.jsonl'), 'utf8'), /"type":"charter_revised"/);
 });
 
+test('propose, approve, revise-charter, approve keeps the branch and base and restores the phase', () => {
+  const { root, id, path } = setup();
+  runCli(['propose', path], { cwd: root });
+  assert.equal(runCli(['approve'], { cwd: root }).code, 0);
+  assert.equal(runCli(['phase', 'merging'], { cwd: root }).code, 0);
+  const before = loadRun(root, id);
+  const file = join(dirname(path), 'idea2.txt');
+  writeFileSync(file, 'a revised idea');
+  assert.equal(runCli(['revise-charter', file], { cwd: root }).code, 0);
+  const r = runCli(['approve'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  const run = loadRun(root, id);
+  assert.equal(run.base_sha, before.base_sha);
+  assert.equal(run.base_branch, before.base_branch);
+  assert.equal(run.integration_branch, before.integration_branch);
+  assert.equal(run.current_wave, before.current_wave);
+  assert.equal(run.phase, 'merging');
+  assert.equal(run.charter_rev, 2);
+  assert.equal(run.charter_sha256, createHash('sha256').update(readFileSync(charterPath(root, run), 'utf8')).digest('hex'));
+  const events = readFileSync(join(runDirOf(root, id), 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(events.filter((e) => e.type === 'approved').at(-1).rev, 2);
+});
+
+test('re-approve defaults the phase to running and needs the integration branch checked out', () => {
+  const { root, id, path } = setup();
+  runCli(['propose', path], { cwd: root });
+  runCli(['approve'], { cwd: root });
+  const file = join(dirname(path), 'idea2.txt');
+  writeFileSync(file, 'a revised idea');
+  runCli(['revise-charter', file], { cwd: root });
+  spawnSync('git', ['checkout', '-q', 'main'], { cwd: root });
+  const refused = runCli(['approve'], { cwd: root });
+  assert.equal(refused.code, 3);
+  assert.match(refused.stderr, new RegExp(`superagent/${id}`));
+  assert.equal(loadRun(root, id).phase, 'awaiting_approval');
+  spawnSync('git', ['checkout', '-q', `superagent/${id}`], { cwd: root });
+  assert.equal(runCli(['approve'], { cwd: root }).code, 0);
+  assert.equal(loadRun(root, id).phase, 'running');
+});
+
 test('revise-charter rejects a missing or empty file', () => {
   const { root, path } = setup();
   runCli(['propose', path], { cwd: root });
@@ -197,6 +238,7 @@ test('revise-charter on a finished run is refused', () => {
   writeFileSync(file, 'new idea');
   const r = runCli(['revise-charter', file, '--run', loadRunId(root)], { cwd: root });
   assert.equal(r.code, 1);
+  assert.match(r.stderr, /cannot revise: run .* is aborted/);
 });
 
 function loadRunId(root) {

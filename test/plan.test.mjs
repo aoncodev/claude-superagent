@@ -45,6 +45,10 @@ test('normalizeRel resolves dot segments', () => {
   assert.equal(normalizeRel(''), null);
   assert.equal(normalizeRel('.'), null);
   assert.equal(normalizeRel(42), null);
+  assert.equal(normalizeRel('src\\..\\..\\evil'), null);
+  assert.equal(normalizeRel('..\\..\\x'), null);
+  assert.equal(normalizeRel('a\\b.ts'), 'a/b.ts');
+  assert.equal(normalizeRel('\\etc\\x'), null);
 });
 
 test('overlaps finds prefix overlap', () => {
@@ -134,7 +138,16 @@ test('validatePlan rejects work in a wave earlier than a contracts ticket', () =
   const p = basePlan();
   p.tickets[1].wave = 0;
   const e = errs(p);
-  assert.ok(has(e, /T2.*before contracts ticket T1/), e.join('\n'));
+  assert.ok(has(e, /T2.*after contracts ticket T1/), e.join('\n'));
+});
+
+test('validatePlan rejects work in the same wave as a contracts ticket', () => {
+  const p = basePlan();
+  p.tickets[1].wave = 1;
+  const e = errs(p);
+  assert.ok(has(e, /T2.*after contracts ticket T1/), e.join('\n'));
+  p.tickets[1].kind = 'fix';
+  assert.ok(has(errs(p), /T2.*fix ticket.*after contracts ticket T1/));
 });
 
 test('validatePlan reports every error, not just the first', () => {
