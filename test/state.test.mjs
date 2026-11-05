@@ -205,3 +205,13 @@ test('charterPath and readCharter', () => {
   writeFileSync(charterPath(root, run), '# Charter\n');
   assert.equal(readCharter(root, run), '# Charter\n');
 });
+
+test('diffNames returns non-ASCII paths unquoted', () => {
+  const root = makeRepo();
+  sh(root, ['checkout', '-q', '-b', 'f']);
+  writeFileSync(join(root, 'ü.txt'), 'n');
+  writeFileSync(join(root, 'plain.txt'), 'n');
+  sh(root, ['add', '.']);
+  sh(root, ['commit', '-q', '-m', 'n']);
+  assert.deepEqual(diffNames(root, 'main', 'f').sort(), ['plain.txt', 'ü.txt']);
+});

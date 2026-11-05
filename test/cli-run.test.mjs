@@ -219,3 +219,26 @@ test('bin/superagent shim is executable and works via PATH-style invocation', ()
   assert.equal(r.status, 0, r.stderr);
   assert.ok(activeRunId(root));
 });
+
+test('abort clears the active pointer when run.json is corrupt, leaves the run folder, and init then succeeds', () => {
+  const root = makeRepo();
+  const id = initRun(root);
+  const file = join(stateDir(root), 'runs', id, 'run.json');
+  writeFileSync(file, '{oops');
+  assert.equal(runCli(['init', '--title', 'blocked'], { cwd: root }).code, 3);
+  const r = runCli(['abort'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stderr, /run\.json/);
+  assert.equal(activeRunId(root), null);
+  assert.equal(readFileSync(file, 'utf8'), '{oops');
+  assert.equal(runCli(['init', '--title', 'next'], { cwd: root }).code, 0);
+});
+
+test('abort clears a stale active pointer to a run that does not exist', () => {
+  const root = makeRepo();
+  initRun(root);
+  writeFileSync(join(stateDir(root), 'active'), 'gone-run\n');
+  const r = runCli(['abort'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(activeRunId(root), null);
+});
