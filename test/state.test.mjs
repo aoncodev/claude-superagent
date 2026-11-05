@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { makeRepo } from './helpers.mjs';
 import {
   StateError, stateDir, ensureStateDir, readConfig, createRun, activeRunId, loadRun, saveRun,
-  loadTickets, saveTicket, appendEvent, charterPath, readCharter, writeReport, loadReport, loadLastReport, draftsDir,
+  loadTickets, saveTicket, appendEvent, charterPath, readCharter, writeReport, loadReport, loadLastReport, draftsDir, loadEvents,
 } from '../lib/state.mjs';
 import { mainRoot, worktreeContaining, dirtyFiles, diffNames, hasHead, git } from '../lib/git.mjs';
 
@@ -229,4 +229,16 @@ test('reports are stored per attempt and loadLastReport returns the highest atte
   assert.equal(loadReport(root, run.id, 'T1', 5), null);
   assert.equal(loadLastReport(root, run.id, 'T11').n, 3);
   assert.equal(draftsDir(root, run.id), join(stateDir(root), 'drafts', run.id));
+});
+
+test('loadEvents skips blank lines and names the file on a malformed line', () => {
+  const root = makeRepo();
+  const run = createRun(root, { title: 'Ev' });
+  appendEvent(root, run.id, 'one', { n: 1 });
+  const file = join(stateDir(root), 'runs', run.id, 'events.jsonl');
+  writeFileSync(file, `${readFileSync(file, 'utf8')}\n   \n`);
+  appendEvent(root, run.id, 'two');
+  assert.deepEqual(loadEvents(root, run.id).map((e) => e.type), ['created', 'one', 'two']);
+  writeFileSync(file, `${readFileSync(file, 'utf8')}{oops\n`);
+  assert.throws(() => loadEvents(root, run.id), (e) => e instanceof StateError && e.message.includes('events.jsonl'));
 });

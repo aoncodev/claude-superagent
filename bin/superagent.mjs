@@ -10,11 +10,15 @@ import { parseArgs, makeContext } from '../lib/cli.mjs';
 import runCommands from '../lib/commands/run.mjs';
 import planCommands from '../lib/commands/plan.mjs';
 import ticketCommands from '../lib/commands/ticket.mjs';
+import mergeCommands from '../lib/commands/merge.mjs';
+import reviewCommands from '../lib/commands/review.mjs';
 
 const GROUPS = [
   runCommands,
   planCommands,
   ticketCommands,
+  mergeCommands,
+  reviewCommands,
 ];
 
 async function main(argv) {
