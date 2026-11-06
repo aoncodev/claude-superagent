@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // PreToolUse guard for Bash. See lib/guard.mjs for the rules.
 import { decideBash } from '../lib/guard.mjs';
+import { inLinkedWorktree } from '../lib/git.mjs';
 import { activeRunId, loadRun, readConfig } from '../lib/state.mjs';
 import { runGuard } from './guard-common.mjs';
+
+const WORKER_AGENT_TYPES = new Set(['superagent:worker', 'superagent:fidelity-reviewer']);
 
 await runGuard(({ payload, root }) => {
   const command = payload.tool_input?.command;
@@ -25,6 +28,15 @@ await runGuard(({ payload, root }) => {
     // Unreadable config: keep blocking outward actions, with default (empty) production markers.
     warning = warning ?? `config.json unreadable: ${e?.message ?? e}`;
   }
-  const d = decideBash({ command, run, config });
+  // A worker or reviewer subagent: by agent type, or by working inside a linked worktree.
+  let fromWorker = WORKER_AGENT_TYPES.has(payload.agent_type);
+  if (!fromWorker) {
+    try {
+      fromWorker = inLinkedWorktree(payload.cwd);
+    } catch {
+      fromWorker = false;
+    }
+  }
+  const d = decideBash({ command, run, config, fromWorker });
   return warning ? { ...d, warning } : d;
 });

@@ -530,3 +530,60 @@ test('regression #8: a verification from before a fix wave does not count for th
   assert.equal(loadRun(root, id).phase, 'verifying');
   assert.equal(runCli(['finish'], { cwd: root }).code, 3, 'the earlier verification was for the previous verifying phase');
 });
+
+// ---- merge-continue judges conflict markers only where the conflict was ----
+
+const UNDERLINE = 'License\n=======\n\nMIT\n';
+
+test('merge-continue accepts a resolved merge when an incoming file has a ======= heading underline', () => {
+  const f = setup();
+  commitIn(f.wt.T1, 'a/README.md', UNDERLINE);
+  conflictTail(f);
+  writeFileSync(join(f.root, 'a/file.txt'), 'resolved\n');
+  sh(f.root, ['add', 'a/file.txt']);
+  const r = runCli(['merge-continue'], { cwd: f.root });
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.equal(ticket(f.root, f.id, 'T1').status, 'merged');
+  assert.equal(readFileSync(join(f.root, 'a/README.md'), 'utf8'), UNDERLINE);
+});
+
+test('merge-continue accepts a hand-committed merge when an incoming file has a ======= heading underline', () => {
+  const f = setup();
+  commitIn(f.wt.T1, 'a/README.md', UNDERLINE);
+  conflictTail(f);
+  writeFileSync(join(f.root, 'a/file.txt'), 'resolved\n');
+  sh(f.root, ['add', 'a/file.txt']);
+  sh(f.root, ['commit', '-q', '--no-edit']);
+  const r = runCli(['merge-continue'], { cwd: f.root });
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.equal(ticket(f.root, f.id, 'T1').status, 'merged');
+});
+
+test('merge-continue accepts a conflicted file resolved to content with a ======= underline', () => {
+  const f = setup();
+  conflictTail(f);
+  writeFileSync(join(f.root, 'a/file.txt'), `resolved\n${UNDERLINE}`);
+  sh(f.root, ['add', 'a/file.txt']);
+  const r = runCli(['merge-continue'], { cwd: f.root });
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+});
+
+test('merge-continue still refuses a hand-committed merge with leftover markers in the conflicted file', () => {
+  const f = setup();
+  commitIn(f.wt.T1, 'a/README.md', UNDERLINE);
+  conflictTail(f);
+  sh(f.root, ['add', 'a/file.txt']); // markers still in it
+  sh(f.root, ['commit', '-q', '--no-edit']);
+  const r = runCli(['merge-continue'], { cwd: f.root });
+  assert.equal(r.code, 3);
+  assert.match(r.stdout, /a\/file\.txt/);
+  assert.doesNotMatch(r.stdout, /README/);
+  assert.equal(ticket(f.root, f.id, 'T1').status, 'ready');
+});
+
+/** Report T1, change a/file.txt on the integration branch, and start the (conflicting) merge. */
+function conflictTail(f) {
+  report(f.root, 'T1', f.wt.T1);
+  commitIn(f.root, 'a/file.txt', 'integration\n');
+  assert.equal(runCli(['merge', 'T1'], { cwd: f.root }).code, 3);
+}

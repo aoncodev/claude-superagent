@@ -8,15 +8,15 @@
 import { RefusalError, UsageError } from '../lib/errors.mjs';
 import { parseArgs, makeContext } from '../lib/cli.mjs';
 import { inLinkedWorktree } from '../lib/git.mjs';
+import { WORKER_COMMANDS } from '../lib/guard.mjs';
 import runCommands from '../lib/commands/run.mjs';
 import planCommands from '../lib/commands/plan.mjs';
 import ticketCommands from '../lib/commands/ticket.mjs';
 import mergeCommands from '../lib/commands/merge.mjs';
 import reviewCommands from '../lib/commands/review.mjs';
 
-// Commands a worker (or the fidelity reviewer) may run. Every other command is the orchestrator's,
-// and is refused from inside a linked worktree, where workers live.
-const WORKER_COMMANDS = new Set(['claim', 'brief', 'report', 'show', 'status', 'proposal', 'check-diff']);
+// WORKER_COMMANDS (lib/guard.mjs) are the commands a worker may run. Every other command is the
+// orchestrator's, and is refused from inside a linked worktree, where workers live.
 
 const GROUPS = [
   runCommands,

@@ -286,3 +286,15 @@ test('regression #2/#4/#14 (probe): guards hold through a merge conflict and a m
   assert.match(denyReason(write(`${root}/b/evil.txt`, root)), /read-only/);
   allowed(write(`${wt}/a/ok.txt`, wt));
 });
+
+test('guard-bash: a worker cannot approve a Charter revision by cd-ing into the main checkout', () => {
+  const { root, wt } = setup('awaiting_approval', { integration_branch: 'superagent/r1' });
+  const cmd = `cd ${root} && superagent approve`;
+  assert.match(denyReason(runHook(BASH, payload(wt, 'Bash', { command: cmd }))), /orchestrator/);
+  // Identified by agent type even when its cwd is the main checkout.
+  assert.match(denyReason(runHook(BASH, payload(root, 'Bash', { command: cmd }, { agent_type: 'superagent:worker', agent_id: 'a1' }))), /orchestrator/);
+  assert.match(denyReason(runHook(BASH, payload(root, 'Bash', { command: 'superagent approve' }, { agent_type: 'superagent:fidelity-reviewer', agent_id: 'r1' }))), /orchestrator/);
+  // The orchestrator, in the main checkout, may approve; a worker may report.
+  allowed(runHook(BASH, payload(root, 'Bash', { command: 'superagent approve' })));
+  allowed(runHook(BASH, payload(wt, 'Bash', { command: 'superagent report T1 --file r.json' })));
+});

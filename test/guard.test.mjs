@@ -475,3 +475,39 @@ test('T6: git stash -a/--all is denied while guarded; other stashes are fine', (
   }
   assert.deepEqual(decideBash({ command: 'git stash -a', run: run('proposing'), config: cfg }), { allow: true });
 });
+
+// ---- worker callers may not run orchestrator commands ----
+
+const W = (command, extra = {}) => decideBash({ command, run: run('awaiting_approval', extra), config: cfg, fromWorker: true });
+
+test('decideBash: a worker may not run orchestrator-only superagent commands, however disguised', () => {
+  for (const c of [
+    'superagent approve',
+    'cd /repo && superagent approve',
+    'cd /repo; superagent reapprove',
+    '/plugin/bin/superagent approve',
+    'node /plugin/bin/superagent.mjs approve',
+    'env FOO=1 superagent revise-charter c.md',
+    "bash -c 'cd /repo && superagent approve'",
+    'superagent "approve"',
+    'superagent merge T1',
+    'superagent finish',
+    'superagent abort',
+    'superagent answer T1 --text yes',
+    'superagent add-ticket t.json',
+  ]) {
+    assert.match(denied(W(c)), /orchestrator/, c);
+  }
+});
+
+test('decideBash: a worker may still run worker commands, and the orchestrator may run anything', () => {
+  for (const c of ['superagent claim T1', 'superagent brief T1', 'superagent report T1 --file r.json', 'superagent show --run', 'superagent status', 'superagent check-diff T1', 'superagent']) {
+    assert.deepEqual(W(c), { allow: true }, c);
+  }
+  assert.deepEqual(decideBash({ command: 'superagent approve', run: run('awaiting_approval'), config: cfg }), { allow: true });
+  assert.deepEqual(decideBash({ command: 'echo superagent approve', run: run('running'), config: cfg, fromWorker: true }), { allow: true });
+});
+
+test('decideBash: the worker check applies even when the run is not guarded', () => {
+  assert.match(denied(decideBash({ command: 'superagent approve', run: null, config: cfg, fromWorker: true })), /orchestrator/);
+});
