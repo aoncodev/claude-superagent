@@ -68,3 +68,18 @@ The runs above were made on v0.1. The v0.2 prompt and interface changes have uni
 | 21 | Resume after compaction starts with `superagent context` and reconciles ListAgents with `running` tickets; orchestrator decisions are recorded with `superagent ruling` | not run |
 | 22 | The fast path offers to skip a run for a one-file idea | not run |
 | 23 | `evals/run.mjs --live` produces a metrics summary for all three arms (dry run is covered by `test/evals.test.mjs`) | not run |
+
+## v0.2.1 fixes (unit-verified; live run not repeated)
+
+The seven findings from the v0.2 adversarial review were fixed and covered by tests. The v0.1 end-to-end
+sessions above predate these changes, so a fresh headless/manual scenario is still worth running.
+
+| # | Check | Verdict |
+|---|---|---|
+| 24 | A failed `depends_on` reports `stuck`, and `retarget` / `drop-ticket` unstick the run | unit-tested |
+| 25 | `audit` names an unrecorded commit made directly on the integration branch and fails; a dirty tree fails | unit-tested |
+| 26 | A review that omits an in-scope Charter item is rejected (coverage, not just shape) | unit-tested |
+| 27 | Two frontier tickets that own the same paths are never scheduled together; `start-ticket` refuses the second | unit-tested |
+| 28 | Fix/fidelity waves use `max(wave) + 1`, and `add-ticket` suggests the first usable wave | unit-tested |
+| 29 | Evals: dry run prints pre-approval, auth pre-check and an independent acceptance command per arm; live mode not yet run | dry-run tested, live not run |
+| 30 | The reviewer's Read/Grep/Glob tools are confined to the review worktree, and `show --json` is denied by the Bash guard | unit-tested |

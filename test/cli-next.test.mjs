@@ -228,3 +228,90 @@ test('a failed ticket in a lower wave does not block later-wave launches (settle
   assert.equal(runNext(root), 'launch T2', 'a settled failed ticket must not deadlock the frontier');
   assert.equal(runCli(['start-ticket', 'T2'], { cwd: root }).code, 0, 'start-ticket agrees with next');
 });
+
+// ---- v0.2.1: stuck dependencies, retarget/drop, overlapping frontier tickets ----
+
+test('a failed dependency reports stuck; start-ticket explains, drop-ticket unsticks', () => {
+  const { root } = setup({ tickets: [ticket('T1', 'a', 1), ticket('T2', 'b', 2, { depends_on: ['T1'] })] });
+  assert.equal(runNext(root), 'launch T1');
+  assert.equal(runCli(['start-ticket', 'T1', '--agent', 'ag-T1'], { cwd: root }).code, 0);
+  assert.equal(runCli(['mark-failed', 'T1', '--reason', 'the worker died twice'], { cwd: root }).code, 0);
+  assert.equal(runNext(root), 'stuck T2');
+  assert.deepEqual(runNextJson(root), { action: 'stuck', tickets: ['T2'], detail: 'a dependency failed or was dropped' });
+  const start = runCli(['start-ticket', 'T2'], { cwd: root });
+  assert.equal(start.code, 3);
+  assert.match(start.stderr, /depends on T1 \(failed\)/);
+  assert.match(start.stderr, /retarget/);
+  assert.match(start.stderr, /drop-ticket/);
+  const badRetarget = runCli(['retarget', 'T2', '--depends-on', 'T1'], { cwd: root });
+  assert.equal(badRetarget.code, 1);
+  assert.match(badRetarget.stderr, /T1 is failed/);
+  assert.equal(runCli(['drop-ticket', 'T2', '--reason', 'the feature was dropped'], { cwd: root }).code, 0);
+  assert.equal(runNext(root), 'advance');
+});
+
+test('retarget points a stuck ticket at its replacement, and the ticket then launches', () => {
+  const { root } = setup({
+    tickets: [ticket('T1', 'a', 1), ticket('T2', 'b', 2, { depends_on: ['T1'] }), ticket('T3', 'c', 2)],
+  });
+  assert.equal(runNext(root), 'launch T1');
+  assert.equal(runCli(['start-ticket', 'T1', '--agent', 'ag-T1'], { cwd: root }).code, 0);
+  assert.equal(runCli(['mark-failed', 'T1', '--reason', 'the worker died twice'], { cwd: root }).code, 0);
+  const wt = work(root, 'T3', 'c/file.txt');
+  reportReady(root, 'T3', wt, 'c/file.txt');
+  assert.equal(runCli(['merge', 'T3'], { cwd: root }).code, 0);
+  assert.equal(runNext(root), 'stuck T2');
+  const r = runCli(['retarget', 'T2', '--depends-on', 'T3'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /T2: depends_on T3/);
+  assert.equal(runNext(root), 'launch T2');
+  assert.equal(runCli(['start-ticket', 'T2'], { cwd: root }).code, 0);
+});
+
+test('retarget rejects unknown, self, duplicate, later-wave and cyclic dependencies', () => {
+  const { root } = setup({ tickets: [ticket('T1', 'a', 1), ticket('T2', 'b', 1, { depends_on: ['T1'] })] });
+  const cases = [
+    [['retarget', 'T1', '--depends-on', 'T9'], /unknown ticket/],
+    [['retarget', 'T1', '--depends-on', 'T1'], /must not include itself/],
+    [['retarget', 'T1', '--depends-on', 'T1,T1'], /duplicate/],
+    [['retarget', 'T1', '--depends-on', 'T2'], /cycle/],
+  ];
+  for (const [args, re] of cases) {
+    const r = runCli(args, { cwd: root });
+    assert.equal(r.code, 1, JSON.stringify(args));
+    assert.match(r.stderr, re, JSON.stringify(args));
+  }
+  const later = setup({ tickets: [ticket('T1', 'a', 1), ticket('T2', 'b', 2)] });
+  const r = runCli(['retarget', 'T1', '--depends-on', 'T2'], { cwd: later.root });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /later than T1's wave/);
+});
+
+test('frontier never launches a ticket whose owns overlap an in-flight ticket', () => {
+  const { root } = setup({
+    tickets: [ticket('T0', 'z', 0), ticket('T1', 'shared', 1), ticket('T2', 'shared', 2, { depends_on: ['T0'] })],
+  });
+  assert.equal(runNext(root), 'launch T0');
+  const wt0 = work(root, 'T0', 'z/file.txt');
+  reportReady(root, 'T0', wt0, 'z/file.txt');
+  assert.equal(runCli(['merge', 'T0'], { cwd: root }).code, 0);
+  // T1 and T2 are both launchable in principle, but they own the same paths: only T1 is selected.
+  assert.equal(runNext(root), 'launch T1');
+  assert.equal(runNextJson(root).tickets.length, 1);
+  assert.equal(runCli(['start-ticket', 'T1', '--agent', 'ag-T1'], { cwd: root }).code, 0);
+  assert.equal(runNext(root), 'wait', 'T2 must wait while T1 is in flight');
+  const start = runCli(['start-ticket', 'T2'], { cwd: root });
+  assert.equal(start.code, 3);
+  assert.match(start.stderr, /overlap T1 \(running\)/);
+});
+
+test('add-ticket wave errors suggest the first usable wave', () => {
+  const { root } = setup({ tickets: [ticket('T1', 'a', 1), ticket('T2', 'b', 2)] });
+  const file = writeReport(root, 't3.json', {
+    id: 'T3', title: 'Late fix', kind: 'fix', wave: 1, scope: 'Fix it', owns: ['c/'],
+    reads: [], contracts: [], done_when: ['works'],
+  });
+  const r = runCli(['add-ticket', '--origin', 'fix', '--file', file], { cwd: root });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /use wave 3 or later/);
+});

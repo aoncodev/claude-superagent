@@ -65,7 +65,7 @@ test('fidelity-reviewer: frontmatter, met coverage and the review-worktree flow'
   assert.ok(body.includes('superagent review-setup'), 'the reviewer names the command that prints its worktree');
   // Regression #6: read the run object only, never tickets or reports.
   assert.ok(body.includes('superagent show --run'), 'reviewer uses `superagent show --run`');
-  assert.match(body, /never run `superagent show` with `--json`/i, 'reviewer is told never to run `show --json`');
+  assert.match(body, /show --json` is hook-denied/i, 'reviewer is told `show --json` is hook-denied');
 });
 
 test('plan-critic: read-only preflight agent returning risks as JSON', () => {
@@ -230,7 +230,8 @@ test('README documents the v0.2 commands, fields and honest limitations', () => 
   assert.match(readme, /not sandboxed/i, 'README is honest that Bash is not sandboxed');
   assert.match(readme, /does not prevent/i, 'README says audit detects integrity violations without preventing them');
   assert.match(readme, /coupled to Claude Code/i, 'README states the platform coupling');
-  assert.match(readme, /prompt-level/i, 'README says the reviewer Read-tool isolation is prompt-level');
+  assert.match(readme, /allows the reviewer to open only paths inside that review worktree/i, 'README says the reviewer read tools are hook-confined to the review worktree');
+  assert.match(readme, /layered, not absolute/i, 'README is honest that reviewer isolation is not absolute');
 });
 
 test('regression #17: README states the diff-check gaps and how a fresh worker continues', () => {
@@ -240,11 +241,11 @@ test('regression #17: README states the diff-check gaps and how a fresh worker c
   assert.match(readme, /new worktree[^\n]*merges the earlier/i, 'a fresh worker gets a new worktree and merges the earlier branch');
 });
 
-test('package and plugin manifests are version 0.2.0 and require Node >= 22', () => {
+test('package and plugin manifests are version 0.2.1 and require Node >= 22', () => {
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(pkg.version, '0.2.0');
+  assert.equal(pkg.version, '0.2.1');
   assert.equal(pkg.engines?.node, '>=22');
-  assert.equal(JSON.parse(read('.claude-plugin/plugin.json')).version, '0.2.0');
+  assert.equal(JSON.parse(read('.claude-plugin/plugin.json')).version, '0.2.1');
 });
 
 test('skill and commands name only commands the CLI has', async () => {

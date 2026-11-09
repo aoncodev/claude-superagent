@@ -75,6 +75,7 @@ Run `superagent next`. It prints exactly one action line. Do exactly that action
 - `advance`: run `superagent next-wave`. It prints `wave <n>` (call `next` again) or `none` (the phase is now `verifying`; `next` prints `verify`).
 - `verify`: go to phase 5.
 - `review`: go to phase 6.
+- `stuck T2 T3`: those planned tickets depend on a ticket that failed or was dropped, so they can never launch. For each one, read `show --json`: if the failed dependency was replaced by a handback or fix ticket, run `superagent retarget <T> --depends-on <replacement>`; if the work should not be done as scoped, run `superagent drop-ticket <T> --reason "<why>"`; if the dependency only needs retrying, retry it. Record the decision with `superagent ruling`, then call `next` again.
 - `none`: the loop is finished for this phase: the run is done, aborted, proposing or awaiting approval. If `show` still reports `running` with a later wave planned, run `superagent next-wave` once, then call `next` again.
 
 **a. Launch.** For each printed ticket id, lowest number first:
@@ -115,6 +116,7 @@ After a scaffold wave merges, run `project.setup` and then `project.checks` in t
   - Put it in a wave after the current one. Use a new last wave if its owned paths would overlap that wave's tickets.
   - For a failed diff check, the new ticket keeps the failed ticket's scope and owns its paths plus the printed ones.
   - Record the decision with `superagent ruling --text "handback from <T> accepted as <new T>: <reason>" --ticket <T>`.
+  - If any planned ticket depended on the failed ticket, repoint it at the replacement with `superagent retarget <T> --depends-on <new ticket>`; otherwise `next` reports it as `stuck`.
 - Skip a handback that a planned ticket already covers; if a handback would change or widen the Charter, ask the user and never act on it unasked.
 
 ## 5. Verify (phase `verifying`)
@@ -124,7 +126,7 @@ After a scaffold wave merges, run `project.setup` and then `project.checks` in t
 3. Run `superagent verify-result --passed true|false --log <that log>`.
 4. If it passed, go to phase 6.
 5. If it failed, run one fix wave:
-   - add `superagent add-ticket --origin fix` tickets (kind `fix`, wave `current_wave + 1`, each owning the failing area). Their scopes state the outcome to restore, not the steps;
+   - add `superagent add-ticket --origin fix` tickets (kind `fix`, wave `max(existing ticket waves) + 1`, read it from `show --json`; it must also be above every merged wave), each owning the failing area. Their scopes state the outcome to restore, not the steps. If `add-ticket` refuses, its message names the first wave that satisfies both rules.
    - run `superagent next-wave` (it returns the run to `running` at that wave), then phase 4, then this phase again;
    - if `add-ticket` refuses with "automatic fix wave limit reached", go to phase 7 and report the failure.
 
@@ -139,7 +141,7 @@ If the newest `.superagent/runs/<run-id>/reviews/<n>.json` was recorded after th
 5. Read the newest `.superagent/runs/<run-id>/reviews/<n>.json`. Reading it is fine; never write there. It covers every in-scope Charter item as `met` (with evidence) or `unmet`, plus `extras` and `contradictions`.
 6. If `unmet` lists items that are inside the Charter, and `run.fix_waves_used.fidelity` is 0, run one fidelity wave:
    - record the decision with `superagent ruling`;
-   - add `superagent add-ticket --origin fidelity` tickets (wave `current_wave + 1`), whose scopes state the unmet outcome, not the steps;
+   - add `superagent add-ticket --origin fidelity` tickets (wave `max(existing ticket waves) + 1`, above every merged wave, as in the fix wave), whose scopes state the unmet outcome, not the steps;
    - run `superagent next-wave`, then phase 4, phase 5, and this phase once more.
 7. Otherwise go to phase 7.
 8. Never remove extras or undo contradictions yourself. List them for the user.
