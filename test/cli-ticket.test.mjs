@@ -99,12 +99,35 @@ test('start-ticket marks the ticket running and counts the attempt', () => {
   assert.match(events, /"type":"ticket_started"/);
 });
 
-test('start-ticket refuses a ticket outside current_wave', () => {
+test('start-ticket refuses a ticket whose prerequisites are not merged', () => {
   const { root, id } = setup();
   const r = start(root, 'T3');
   assert.equal(r.code, 3);
-  assert.match(r.stderr, /wave/);
+  assert.match(r.stderr, /prerequisites are not merged/);
   assert.equal(ticket(root, id, 'T3').status, 'planned');
+});
+
+test('start-ticket launches a later-wave ticket whose depends_on are merged (frontier)', () => {
+  const { root, id } = setup();
+  saveTicket(root, id, { ...ticket(root, id, 'T1'), status: 'merged' });
+  const a = addTicket(root, ticketJson({ id: 'T4', kind: 'work', wave: 2, owns: ['./src/frontier/'], depends_on: ['T1'] }), 'handback');
+  assert.equal(a.code, 0, a.stderr);
+  assert.equal(loadRun(root, id).current_wave, 1, 'the current wave stays lower');
+  const s = start(root, 'T4', 'a-frontier');
+  assert.equal(s.code, 0, s.stderr);
+  const t = ticket(root, id, 'T4');
+  assert.equal(t.status, 'running');
+  assert.equal(t.attempts, 1);
+  assert.equal(t.agent_id, 'a-frontier');
+});
+
+test('start-ticket launches a later-wave ticket once every lower wave is merged', () => {
+  const { root, id } = setup();
+  saveTicket(root, id, { ...ticket(root, id, 'T1'), status: 'merged' });
+  saveTicket(root, id, { ...ticket(root, id, 'T2'), status: 'merged' });
+  assert.equal(loadRun(root, id).current_wave, 1);
+  assert.equal(start(root, 'T3').code, 0);
+  assert.equal(ticket(root, id, 'T3').status, 'running');
 });
 
 test('start-ticket refuses outside the running phase and for unknown tickets', () => {
@@ -449,4 +472,86 @@ test('regression #10: add-ticket requires a wave after the current wave', () => 
   assert.match(r.stderr, /current wave/);
   assert.equal(ticket(root, id, 'T4'), undefined);
   assert.equal(addTicket(root, ticketJson({ id: 'T4', kind: 'work', wave: 2, owns: ['src/late/'] }), 'handback').code, 0);
+});
+
+test('brief includes drafts/<run>/context.md as read-only project context after Checks', () => {
+  const { root, id } = setup();
+  start(root, 'T1');
+  const drafts = join(stateDir(root), 'drafts', id);
+  const contextFile = join(drafts, 'context.md');
+  assert.equal(existsSync(contextFile), false);
+  let b = runCli(['brief', 'T1'], { cwd: root });
+  assert.equal(b.code, 0, b.stderr);
+  assert.ok(!b.stdout.includes('## Project context'), 'no section without the file');
+  assert.equal(existsSync(contextFile), false, 'brief creates nothing');
+  mkdirSync(drafts, { recursive: true });
+  writeFileSync(contextFile, '# Project context\n\n- Stack: Node 22\n- Checks: npm test\n');
+  b = runCli(['brief', 'T1'], { cwd: root });
+  assert.equal(b.code, 0, b.stderr);
+  const out = b.stdout;
+  assert.match(out, /## Project context/);
+  assert.ok(out.includes('- Stack: Node 22'), 'the file contents are included');
+  assert.match(out, /read-only context/);
+  const checks = out.indexOf('## Checks');
+  const context = out.indexOf('## Project context');
+  const report = out.lastIndexOf('Report file:');
+  assert.ok(checks >= 0 && checks < context, 'after Checks');
+  assert.ok(context < report, 'before the report line');
+  assert.ok(out.indexOf('# Charter') < context, 'the context never comes above the Charter');
+});
+
+test('add-ticket stores model and depends_on, defaulting to null and []', () => {
+  const { root, id } = setup();
+  const withFields = ticketJson({ id: 'T4', kind: 'work', wave: 2, owns: ['./src/modeled/'], model: 'sonnet', depends_on: ['T2'] });
+  const r = addTicket(root, withFields, 'handback');
+  assert.equal(r.code, 0, r.stderr);
+  const t = ticket(root, id, 'T4');
+  assert.equal(t.model, 'sonnet');
+  assert.deepEqual(t.depends_on, ['T2']);
+  const plain = ticketJson({ id: 'T5', kind: 'work', wave: 2, owns: ['./src/plain/'] });
+  assert.equal(addTicket(root, plain, 'handback').code, 0);
+  const t2 = ticket(root, id, 'T5');
+  assert.equal(t2.model, null);
+  assert.deepEqual(t2.depends_on, []);
+});
+
+test('refused ticket commands append no event and leave no lock file behind', () => {
+  const { root, id } = setup();
+  const eventsFile = join(stateDir(root), 'runs', id, 'events.jsonl');
+  const lock = join(stateDir(root), 'runs', id, 'tickets', 'T1.lock');
+  const before = readFileSync(eventsFile, 'utf8');
+  assert.equal(start(root, 'T3').code, 3, 'outside the current wave');
+  assert.equal(runCli(['answer', 'T1', '--text', 'x'], { cwd: root }).code, 3, 'not blocked');
+  assert.equal(runCli(['mark-failed', 'T1', '--reason', 'x'], { cwd: root }).code, 3, 'not running');
+  assert.equal(runCli(['set-agent', 'T1', '--agent', 'x'], { cwd: root }).code, 3, 'no attempt yet');
+  assert.equal(readFileSync(eventsFile, 'utf8'), before, 'no event for a refused command');
+  assert.equal(existsSync(lock), false, 'no lock left behind by a refused command');
+  assert.equal(start(root, 'T1').code, 0);
+  assert.match(readFileSync(eventsFile, 'utf8'), /"type":"ticket_started"/);
+  assert.equal(existsSync(lock), false, 'no lock left behind by a successful command');
+});
+
+test('add-ticket accepts depends_on naming an already merged ticket (frontier use)', () => {
+  const { root, id } = setup();
+  saveTicket(root, id, { ...ticket(root, id, 'T1'), status: 'merged' });
+  const r = addTicket(root, ticketJson({ id: 'T4', kind: 'work', wave: 2, owns: ['./src/after-merge/'], depends_on: ['T1'] }), 'handback');
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(ticket(root, id, 'T4').depends_on, ['T1']);
+});
+
+test('add-ticket rejects unknown, self, duplicate and later-wave depends_on without saving', () => {
+  const { root, id } = setup();
+  const bad = (t) => addTicket(root, t, 'handback');
+  const base = (over = {}) => ticketJson({ id: 'T4', kind: 'work', wave: 2, owns: ['./src/deps/'], ...over });
+  assert.equal(bad(base({ depends_on: ['T9'] })).code, 1, 'unknown id');
+  assert.equal(bad(base({ depends_on: ['T4'] })).code, 1, 'self-reference');
+  assert.equal(bad(base({ depends_on: ['T2', 'T2'] })).code, 1, 'duplicate');
+  assert.equal(bad(base({ depends_on: 'T2' })).code, 1, 'not an array');
+  assert.equal(ticket(root, id, 'T4'), undefined, 'nothing saved');
+  // a dependency in a later wave than the new ticket
+  assert.equal(addTicket(root, ticketJson({ id: 'T5', kind: 'work', wave: 3, owns: ['./src/wave3/'] }), 'handback').code, 0);
+  const later = bad(base({ depends_on: ['T5'] }));
+  assert.equal(later.code, 1, 'dependency in a later wave');
+  assert.match(later.stderr, /later than/);
+  assert.equal(ticket(root, id, 'T4'), undefined, 'nothing saved');
 });

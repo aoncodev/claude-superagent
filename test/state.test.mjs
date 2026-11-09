@@ -8,6 +8,7 @@ import { makeRepo } from './helpers.mjs';
 import {
   StateError, stateDir, ensureStateDir, readConfig, createRun, activeRunId, loadRun, saveRun,
   loadTickets, saveTicket, appendEvent, charterPath, readCharter, writeReport, loadReport, loadLastReport, draftsDir, loadEvents,
+  updateTicket,
 } from '../lib/state.mjs';
 import { mainRoot, worktreeContaining, dirtyFiles, diffNames, hasHead, git } from '../lib/git.mjs';
 
@@ -241,4 +242,45 @@ test('loadEvents skips blank lines and names the file on a malformed line', () =
   assert.deepEqual(loadEvents(root, run.id).map((e) => e.type), ['created', 'one', 'two']);
   writeFileSync(file, `${readFileSync(file, 'utf8')}{oops\n`);
   assert.throws(() => loadEvents(root, run.id), (e) => e instanceof StateError && e.message.includes('events.jsonl'));
+});
+
+test('createRun sets the v0.2 defaults shared_files [] and review_worktree null', () => {
+  const root = makeRepo();
+  const run = createRun(root, { title: 'v0.2 defaults' });
+  assert.deepEqual(run.shared_files, []);
+  assert.equal(run.review_worktree, null);
+  const loaded = loadRun(root, run.id);
+  assert.deepEqual(loaded.shared_files, []);
+  assert.equal(loaded.review_worktree, null);
+});
+
+test('updateTicket loads, mutates and writes the ticket, keeping the fields it does not touch', () => {
+  const root = makeRepo();
+  const run = createRun(root, { title: 'Locked' });
+  saveTicket(root, run.id, {
+    id: 'T1', title: 'One', kind: 'work', wave: 2, scope: 's', owns: ['src/'], reads: [], contracts: [], done_when: [],
+    status: 'planned', attempts: 0,
+  });
+  const t = updateTicket(root, run.id, 'T1', (ticket) => {
+    ticket.status = 'running';
+    ticket.attempts += 1;
+  });
+  assert.equal(t.id, 'T1');
+  assert.equal(t.status, 'running');
+  assert.equal(t.attempts, 1);
+  const stored = loadTickets(root, run.id).find((x) => x.id === 'T1');
+  assert.equal(stored.title, 'One');
+  assert.equal(stored.wave, 2);
+  assert.deepEqual(stored.owns, ['src/']);
+  assert.equal(stored.status, 'running');
+});
+
+test('updateTicket rejects an invalid ticket id and reads a missing ticket as a state error', () => {
+  const root = makeRepo();
+  const run = createRun(root, { title: 't' });
+  assert.throws(() => updateTicket(root, run.id, '../T1', () => {}), StateError);
+  assert.throws(
+    () => updateTicket(root, run.id, 'T9', () => {}),
+    (e) => e instanceof StateError && /T9\.json/.test(e.message),
+  );
 });

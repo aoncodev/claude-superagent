@@ -229,3 +229,119 @@ test('regression #11: a new project needs exactly one scaffold ticket, in the lo
   p.tickets.push(scaffold('T0', 5));
   assert.ok(has(errs(p), /T0: scaffold ticket must be in the lowest wave/), 'scaffold after other work');
 });
+
+// ---- v0.2: shared_files, depends_on, model ----
+
+const scaffoldTicket = (over = {}) => ({
+  id: 'T0', title: 'Scaffold', kind: 'scaffold', wave: 0, scope: 'Init project',
+  owns: ['package.json', 'src/'], reads: [], contracts: [], done_when: [], ...over,
+});
+
+test('validatePlan accepts shared_files owned by contracts or scaffold tickets', () => {
+  let p = basePlan({ shared_files: ['./docs/../docs/auth.md', 'docs/types.ts'] });
+  assert.deepEqual(errs(p), []);
+  p = basePlan({
+    project: { kind: 'new', stack: 'node', setup: [], checks: [], integration_checks: [] },
+    shared_files: ['package.json'],
+  });
+  p.tickets.unshift(scaffoldTicket());
+  assert.deepEqual(errs(p), []);
+});
+
+test('validatePlan rejects shared_files that is not an array of strings', () => {
+  for (const bad of ['docs/auth.md', null, [42], ['ok', 7]]) {
+    const p = basePlan({ shared_files: bad });
+    assert.ok(has(errs(p), /shared_files/), JSON.stringify(bad));
+  }
+});
+
+test('validatePlan rejects shared_files entries that are not repo-relative, are globs, or repeat', () => {
+  let p = basePlan({ shared_files: ['../outside.ts'] });
+  assert.ok(has(errs(p), /shared_files entry .*not a repo-relative path/));
+  p = basePlan({ shared_files: ['/etc/passwd'] });
+  assert.ok(has(errs(p), /shared_files entry .*not a repo-relative path/));
+  p = basePlan({ shared_files: ['docs/*.ts'] });
+  assert.ok(has(errs(p), /shared_files entry .*looks like a glob/));
+  p = basePlan({ shared_files: ['docs/auth.md', './docs/../docs/auth.md'] });
+  assert.ok(has(errs(p), /shared_files: duplicate entry/));
+});
+
+test('validatePlan requires a scaffold or contracts owner for every shared file', () => {
+  let p = basePlan({ shared_files: ['lib/nobody-owns.ts'] });
+  assert.ok(has(errs(p), /shared_files entry .*not owned by any scaffold or contracts ticket/), errs(p).join('\n'));
+  p = basePlan({ shared_files: ['src/api/types.ts'] });
+  const e = errs(p);
+  assert.ok(has(e, /not owned by any scaffold or contracts ticket/), e.join('\n'));
+  assert.ok(has(e, /must not be owned by a work or fix ticket \(T2 owns it\)/), e.join('\n'));
+});
+
+test('validatePlan rejects a shared file owned by a work or fix ticket even when a contracts ticket also owns it', () => {
+  const p = basePlan({ shared_files: ['docs/shared.md'] });
+  p.tickets[2].kind = 'fix'; // a work/fix ticket may not own shared files
+  p.tickets[2].owns = ['docs/']; // overlaps T1: keep waves apart so only that rule fires
+  p.tickets[2].wave = 3;
+  assert.ok(has(errs(p), /must not be owned by a work or fix ticket \(T3 owns it\)/), errs(p).join('\n'));
+});
+
+test('validatePlan accepts well-formed depends_on; same-wave dependencies are allowed', () => {
+  let p = basePlan();
+  p.tickets[1].depends_on = ['T1'];
+  p.tickets[2].depends_on = ['T1', 'T2'];
+  assert.deepEqual(errs(p), []);
+});
+
+test('validatePlan rejects unknown, self, duplicate and non-array depends_on', () => {
+  let p = basePlan();
+  p.tickets[1].depends_on = ['T9'];
+  assert.ok(has(errs(p), /T2: depends_on unknown ticket id "T9"/));
+  p = basePlan();
+  p.tickets[1].depends_on = ['T2'];
+  assert.ok(has(errs(p), /T2: depends_on must not include itself/));
+  p = basePlan();
+  p.tickets[1].depends_on = ['T3', 'T3'];
+  assert.ok(has(errs(p), /T2: depends_on has duplicate entry "T3"/));
+  p = basePlan();
+  p.tickets[1].depends_on = 'T1';
+  assert.ok(has(errs(p), /T2: depends_on must be an array/));
+});
+
+test('validatePlan rejects a depends_on in a later wave', () => {
+  const p = basePlan();
+  p.tickets[2].wave = 4; // T3 moves later; T2 now depends on it
+  p.tickets[1].depends_on = ['T3'];
+  const e = errs(p);
+  assert.ok(has(e, /T2: depends_on T3 is in wave 4, later than T2's wave 2/), e.join('\n'));
+});
+
+test('validatePlan reports a depends_on cycle in the contract format', () => {
+  const p = basePlan();
+  p.tickets[1].depends_on = ['T3'];
+  p.tickets[2].depends_on = ['T2'];
+  assert.ok(errs(p).includes('T2: depends_on cycle: T2 -> T3 -> T2'), errs(p).join('\n'));
+});
+
+test('validatePlan accepts a non-empty model and rejects empty or non-string models', () => {
+  let p = basePlan();
+  p.tickets[1].model = 'claude-sonnet-4';
+  assert.deepEqual(errs(p), []);
+  p = basePlan();
+  p.tickets[1].model = null; // "no override": a ticket object from show --json must re-validate
+  assert.deepEqual(errs(p), []);
+  p = basePlan();
+  p.tickets[1].model = '';
+  assert.ok(has(errs(p), /T2: model must be a non-empty string/));
+  p = basePlan();
+  p.tickets[1].model = 3;
+  assert.ok(has(errs(p), /T2: model must be a non-empty string/));
+});
+
+test('renderProposal prints the Shared files section after Contracts and before the waves', () => {
+  const p = basePlan({ shared_files: ['docs/auth.md', 'docs/types.ts'] });
+  const out = renderProposal({ parallelism: 4 }, p);
+  assert.ok(out.includes('Shared files:'));
+  assert.ok(out.includes('  docs/auth.md'));
+  assert.ok(out.includes('  docs/types.ts'));
+  assert.ok(out.indexOf('Contracts') < out.indexOf('Shared files:'));
+  assert.ok(out.indexOf('Shared files:') < out.indexOf('Wave 1'));
+  assert.ok(!renderProposal({ parallelism: 4 }, basePlan()).includes('Shared files'));
+});

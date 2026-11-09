@@ -52,3 +52,19 @@ Repo: the finished todo app, merged to `main`, with its `/health` route removed.
 | `/plugin marketplace add /path/to/claude-superagent` and `/plugin install superagent@superagent-local` in the interactive UI, then a normal session using the installed copy (commands, hooks and `bin/` on PATH coming from the plugin cache) | manual |
 
 The CLI install path was re-checked in an isolated `CLAUDE_CONFIG_DIR`: `claude plugin marketplace add` → "Successfully added marketplace: superagent-local"; `claude plugin install superagent@superagent-local` → "Successfully installed plugin"; the cache copy has an executable `bin/superagent` and `hooks/hooks.json`; `claude plugin validate .` → "Validation passed".
+
+## v0.2 additions (not yet verified end-to-end)
+
+The runs above were made on v0.1. The v0.2 prompt and interface changes have unit-test coverage but have not been re-run headlessly. Re-run one scenario (ideally scenario 2, an existing repo) and check:
+
+| # | Check | Verdict |
+|---|---|---|
+| 15 | The plan preflight launches `superagent:plan-critic`, and the proposal is only shown after its risks are resolved or judged non-real | not run |
+| 16 | The wave loop follows `superagent next` actions: `launch` → `merge` → `advance` → `verify` → `review`, with no launches or merges `next` did not print | not run |
+| 17 | `superagent audit` runs before the verification checks and passes on a clean run | not run |
+| 18 | The reviewer is launched with the `superagent review-setup` path, its `review.json` is recorded with `review --file`, and `review-close` removes the worktree | not run |
+| 19 | The review JSON covers every in-scope Charter item in `met` or `unmet`, with file-level evidence | not run |
+| 20 | Per-ticket `model`, `shared_files` and `depends_on` appear in the proposal and change scheduling as intended | not run |
+| 21 | Resume after compaction starts with `superagent context` and reconciles ListAgents with `running` tickets; orchestrator decisions are recorded with `superagent ruling` | not run |
+| 22 | The fast path offers to skip a run for a one-file idea | not run |
+| 23 | `evals/run.mjs --live` produces a metrics summary for all three arms (dry run is covered by `test/evals.test.mjs`) | not run |
