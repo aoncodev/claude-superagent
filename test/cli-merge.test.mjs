@@ -344,15 +344,15 @@ test('review writes reviews/<n>.json with increasing n and an event', () => {
   assert.equal(runCli(['review', '--file', writeJson(root, 'r.json', { met: [], unmet: [], extras: [], contradictions: [] })], { cwd: root }).code, 3, 'not reviewing yet');
   setPhase(root, 'reviewing');
   const good = writeJson(root, 'r.json', {
-    met: [{ item: 'login works', evidence: 'a/login.ts' }],
-    unmet: [{ item: 'logout', evidence: 'no route' }], extras: [], contradictions: [],
+    met: [{ item: 'a', evidence: 'a/file.txt' }],
+    unmet: [{ item: 'b', evidence: 'no route' }], extras: [], contradictions: [],
   });
   assert.equal(runCli(['review', '--file', good], { cwd: root }).code, 0);
   assert.equal(runCli(['review', '--file', good], { cwd: root }).code, 0);
   const dir = join(stateDir(root), 'runs', id, 'reviews');
   assert.deepEqual(readdirSync(dir).sort(), ['1.json', '2.json']);
-  assert.equal(JSON.parse(readFileSync(join(dir, '1.json'), 'utf8')).met[0].item, 'login works');
-  assert.equal(JSON.parse(readFileSync(join(dir, '1.json'), 'utf8')).unmet[0].item, 'logout');
+  assert.equal(JSON.parse(readFileSync(join(dir, '1.json'), 'utf8')).met[0].item, 'a');
+  assert.equal(JSON.parse(readFileSync(join(dir, '1.json'), 'utf8')).unmet[0].item, 'b');
   assert.equal(events(root, id, 'reviewed').length, 2);
   assert.equal(events(root, id, 'reviewed')[0].met, 1);
 });
@@ -370,7 +370,7 @@ test('finish is allowed from verifying or reviewing, sets done and clears active
   const b = setup();
   setPhase(b.root, 'verifying');
   assert.equal(runCli(['verify-result', '--passed', 'true'], { cwd: b.root }).code, 0);
-  assert.equal(runCli(['review', '--file', writeJson(b.root, 'rv.json', { met: [], unmet: [], extras: [], contradictions: [] })], { cwd: b.root }).code, 0);
+  assert.equal(runCli(['review', '--file', writeJson(b.root, 'rv.json', { met: [{ item: 'a', evidence: 'a/file.txt' }, { item: 'b', evidence: 'b/file.txt' }], unmet: [], extras: [], contradictions: [] })], { cwd: b.root }).code, 0);
   assert.equal(runCli(['finish'], { cwd: b.root }).code, 0);
   assert.equal(loadRun(b.root, b.id).phase, 'done');
 });
@@ -514,14 +514,14 @@ test('regression #8: finish needs a recorded verification (and a review when rev
   assert.equal(loadRun(root, id).phase, 'reviewing');
 
   const rv = writeJson(root, 'rv.json', {
-    met: [{ item: 'login works', evidence: 'a/login.ts' }],
-    unmet: [{ item: 'logout', evidence: 'no route' }], extras: [], contradictions: [],
+    met: [{ item: 'a', evidence: 'a/file.txt' }, { item: 'b', evidence: 'b/file.txt' }],
+    unmet: [], extras: [], contradictions: [],
   });
   assert.equal(runCli(['review', '--file', rv], { cwd: root }).code, 0);
   const r = runCli(['finish'], { cwd: root });
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /verification: passed/);
-  assert.match(r.stdout, /review 1: 1 unmet, 0 extras, 0 contradictions/);
+  assert.match(r.stdout, /review 1: 0 unmet, 0 extras, 0 contradictions/);
   assert.equal(loadRun(root, id).phase, 'done');
 });
 

@@ -571,3 +571,61 @@ test('reviewer isolation: mainRoot is optional; without it only run-state refere
   // Without reviewer, the same command is untouched.
   assert.deepEqual(decideBash({ command: `cd ${MAIN} && ls`, run: null, config: cfg }), { allow: true });
 });
+
+// ---- v0.2.1 finding 7: reviewer Bash hardening ----
+
+test('fix 7: the reviewer may mention .superagent only as .superagent/drafts', () => {
+  for (const c of [
+    'cat .superagent/drafts/r1/review.json',
+    'ls .superagent/drafts',
+    'tail -n 5 "$REVIEW/.superagent/drafts/r1/review.json"',
+    'cd .superagent/drafts && cat r1/review.json',
+  ]) assert.deepEqual(R(c), { allow: true }, c);
+  for (const c of [
+    'cat .superagent/active',
+    'cat .superagent/config.json',
+    'cat .superagent/ru*/run.json',
+    'ls .superagent/ru*',
+    'cat .SUPERAGENT/ACTIVE',
+    'cat ./.superagent/active',
+    'cd .superagent && cat runs/r1/run.json',
+    'cd .superagent/drafts && cat ../runs/r1/run.json',
+    'cat .superagent/drafts/../runs/r1/run.json',
+  ]) assert.match(denied(R(c)), reviewerReason, c);
+});
+
+test('fix 7: a git range to a superagent branch is not a run-state mention', () => {
+  assert.deepEqual(R('git diff abc123..superagent/r1'), { allow: true });
+  assert.deepEqual(R('git diff abc123...superagent/r1'), { allow: true });
+  assert.deepEqual(R('git log --oneline -- superagent/r1'), { allow: true });
+});
+
+test('fix 7: the reviewer may not run superagent show --json, in either flag order or the node form', () => {
+  for (const c of [
+    'superagent show --json',
+    'superagent show --json --run',
+    'superagent show --run --json',
+    'superagent show --charter --json',
+    'superagent show --json=true',
+    'superagent show --run --json=true',
+    '/plugin/bin/superagent show --json',
+    'node /plugin/bin/superagent.mjs show --json',
+    'node ../bin/superagent.mjs show --run --json',
+    'env FOO=1 superagent show --json',
+    "bash -c 'superagent show --json'",
+  ]) assert.match(denied(R(c)), /superagent show --json/);
+  for (const c of ['superagent show --run', 'superagent show --charter', 'superagent show', 'node /plugin/bin/superagent.mjs show --run']) {
+    assert.deepEqual(R(c), { allow: true }, c);
+  }
+});
+
+test('fix 7: the new reviewer rules apply with no run and never touch other callers', () => {
+  for (const r of [null, run('proposing'), run('done')]) {
+    assert.match(denied(decideBash({ command: 'cat .superagent/active', run: r, config: cfg, reviewer: true, mainRoot: MAIN })), reviewerReason, String(r?.phase));
+    assert.match(denied(decideBash({ command: 'superagent show --json', run: r, config: cfg, reviewer: true, mainRoot: MAIN })), /show --json/, String(r?.phase));
+  }
+  for (const c of ['cat .superagent/active', 'superagent show --json']) {
+    assert.deepEqual(decideBash({ command: c, run: null, config: cfg }), { allow: true }, c);
+    assert.deepEqual(decideBash({ command: c, run: null, config: cfg, fromWorker: true }), { allow: true }, c);
+  }
+});

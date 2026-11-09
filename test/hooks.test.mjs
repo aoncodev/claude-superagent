@@ -10,6 +10,7 @@ import { makeRepo, runCli, runHook } from './helpers.mjs';
 const PLUGIN = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const FILES = join(PLUGIN, 'hooks', 'guard-files.mjs');
 const BASH = join(PLUGIN, 'hooks', 'guard-bash.mjs');
+const READ = join(PLUGIN, 'hooks', 'guard-read.mjs');
 
 function sh(cwd, args) {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -173,15 +174,16 @@ test('a non-repo cwd exits 0 with no output', () => {
   }
 });
 
-test('hooks.json registers both guards with ${CLAUDE_PLUGIN_ROOT} and a 10s timeout', () => {
+test('hooks.json registers all three guards with ${CLAUDE_PLUGIN_ROOT} and a 10s timeout', () => {
   const cfg = JSON.parse(readFileSync(join(PLUGIN, 'hooks', 'hooks.json'), 'utf8'));
   const entries = cfg.hooks.PreToolUse;
-  assert.equal(entries.length, 2);
+  assert.equal(entries.length, 3);
   const byMatcher = Object.fromEntries(entries.map((e) => [e.matcher, e.hooks[0]]));
   assert.equal(byMatcher['Write|Edit|MultiEdit|NotebookEdit'].command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/guard-files.mjs"');
   assert.equal(byMatcher.Bash.command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/guard-bash.mjs"');
+  assert.equal(byMatcher['Read|Grep|Glob'].command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/guard-read.mjs"');
   for (const h of Object.values(byMatcher)) { assert.equal(h.type, 'command'); assert.equal(h.timeout, 10); }
-  assert.ok(existsSync(FILES) && existsSync(BASH));
+  assert.ok(existsSync(FILES) && existsSync(BASH) && existsSync(READ));
 });
 
 // ---- fix round 1 ----
@@ -339,4 +341,46 @@ test('guard-bash: reviewer denial holds with no guarded run, and run-state write
   // Run-state writes are still denied for ordinary callers.
   const c = setup('running');
   assert.match(denyReason(runHook(BASH, payload(c.root, 'Bash', { command: 'echo x > .superagent/runs/r1/run.json' }))), /superagent CLI/);
+});
+
+// ---- v0.2.1 finding 7: reviewer Read/Grep/Glob isolation and Bash hardening (e2e) ----
+
+test('guard-read (e2e): the fidelity reviewer may read only its review worktree', () => {
+  const review = realpathSync(mkdtempSync(join(tmpdir(), 'superagent-review-wt-')));
+  mkdirSync(join(review, 'src'), { recursive: true });
+  writeFileSync(join(review, 'src', 'a.ts'), 'export const a = 1;\n');
+  const { root } = setup('reviewing', { review_worktree: review });
+  const read = (tool, input, extra = REVIEWER) => runHook(READ, payload(root, tool, input, extra));
+  const READ_REASON = 'Blocked: the fidelity reviewer may read only its review worktree.';
+
+  allowed(read('Read', { file_path: join(review, 'src/a.ts') }));
+  allowed(read('Grep', { pattern: 'a', path: join(review, 'src') }));
+  allowed(read('Glob', { pattern: '**/*.ts', path: review }));
+  assert.equal(denyReason(read('Read', { file_path: join(root, 'README.md') })), READ_REASON);
+  assert.equal(denyReason(read('Read', { file_path: join(root, '.superagent/runs/r1/run.json') })), READ_REASON);
+  assert.equal(denyReason(read('Glob', { pattern: '**/*' })), READ_REASON); // Grep/Glob default to the caller's cwd
+
+  // Every other caller keeps its ordinary access.
+  allowed(read('Read', { file_path: join(review, 'src/a.ts') }, {}));
+  allowed(read('Read', { file_path: join(root, 'README.md') }, { agent_type: 'superagent:worker' }));
+});
+
+test('guard-bash (e2e): the reviewer may mention .superagent only as drafts, and may not run show --json', () => {
+  const { root } = setup('running');
+  for (const command of [
+    'cat .superagent/active',
+    'cat .superagent/ru*/run.json',
+    'cat ./.superagent/config.json',
+    'cd .superagent && ls runs',
+    'cat .superagent/drafts/../runs/r1/run.json',
+  ]) assert.match(denyReason(reviewerBash(root, command)), REVIEWER_REASON, command);
+  allowed(reviewerBash(root, 'cat .superagent/drafts/r1/review.json'));
+  allowed(reviewerBash(root, 'ls .superagent/drafts'));
+  assert.match(denyReason(reviewerBash(root, 'superagent show --json')), /show --json/);
+  assert.match(denyReason(reviewerBash(root, 'superagent show --run --json')), /show --json/);
+  assert.match(denyReason(reviewerBash(root, 'node /plugin/bin/superagent.mjs show --json')), /show --json/);
+  allowed(reviewerBash(root, 'superagent show --run'));
+  // The orchestrator's identical commands are untouched.
+  allowed(runHook(BASH, payload(root, 'Bash', { command: 'cat .superagent/active' })));
+  allowed(runHook(BASH, payload(root, 'Bash', { command: 'superagent show --json' })));
 });

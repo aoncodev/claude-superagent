@@ -95,3 +95,15 @@ test('regression #17: failed and dropped tickets need the user only while the wa
     assert.equal(out.split('\n')[0], 'Nothing needs you.', phase);
   }
 });
+
+test('the displayed wave follows the lowest open ticket during a frontier run', () => {
+  const tickets = [
+    { id: 'T1', title: 'T1', status: 'merged', wave: 1 },
+    { id: 'T2', title: 'T2', status: 'running', wave: 2 },
+    { id: 'T3', title: 'T3', status: 'planned', wave: 2 },
+  ];
+  const lines = renderStatus(run({ current_wave: 1 }), tickets, {}, []).split('\n');
+  assert.match(lines[1], /wave 2\/2/);
+  const approved = renderStatus(run({ phase: 'awaiting_approval', current_wave: null }), [tk('T1', 'planned', 3)], {}, []);
+  assert.match(approved.split('\n').at(-1), /wave -\/3/);
+});

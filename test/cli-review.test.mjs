@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { makeRepo, runCli, setPhase } from './helpers.mjs';
 import { activeRunId, loadEvents, loadRun, stateDir } from '../lib/state.mjs';
+import { coverageErrors } from '../lib/commands/review.mjs';
 
 const sh = (cwd, args) => {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -153,8 +154,8 @@ test('review accepts an absolute --file path, stores met alongside the other lis
   const { root, id } = reviewing();
   const path = setupWorktree(root);
   const data = {
-    met: [{ item: 'first in-scope item', evidence: 'a/file.txt' }, { item: 'second in-scope item', evidence: 'README.md' }],
-    unmet: [{ item: 'third in-scope item', evidence: 'no route' }],
+    met: [{ item: 'a', evidence: 'a/file.txt' }, { item: 'a derived extra observation', evidence: 'README.md' }],
+    unmet: [{ item: 'an out-of-scope observation', evidence: 'no route' }],
     extras: [],
     contradictions: [],
   };
@@ -187,8 +188,27 @@ test('review rejects a missing or invalid met list and stores nothing', () => {
     assert.match(r.stderr, re, JSON.stringify(data));
     assert.ok(!existsSync(dir), `no review is stored for ${JSON.stringify(data)}`);
   }
-  // met: [] is valid: a Charter with no in-scope items.
+  // `met: []` no longer passes: the Charter's one in-scope item ("a") must be assessed.
   const empty = runCli(['review', '--file', tmpFile({ met: [], unmet: [], extras: [], contradictions: [] })], { cwd: root });
-  assert.equal(empty.code, 0, empty.stderr);
-  assert.deepEqual(JSON.parse(readFileSync(join(dir, '1.json'), 'utf8')), { met: [], unmet: [], extras: [], contradictions: [] });
+  assert.equal(empty.code, 1);
+  assert.match(empty.stderr, /does not assess in-scope Charter item "a"/);
+  assert.ok(!existsSync(dir), 'no review is stored');
+});
+
+test('coverageErrors requires every in-scope Charter item in exactly one of met or unmet', () => {
+  const item = (name) => ({ item: name, evidence: 'x' });
+  assert.deepEqual(coverageErrors(['a', 'b'], { met: [item('a')], unmet: [item('b')] }), []);
+  assert.deepEqual(
+    coverageErrors(['a'], { met: [item('a'), item('a')], unmet: [] }).length,
+    0,
+    'duplicates in met are not a coverage failure',
+  );
+  assert.match(coverageErrors(['a', 'b'], { met: [item('a')], unmet: [] })[0], /does not assess.*"b"/);
+  assert.match(coverageErrors(['a'], { met: [item('a')], unmet: [item('a')] })[0], /both met and unmet/);
+  assert.deepEqual(coverageErrors([], { met: [], unmet: [] }), []);
+  assert.deepEqual(
+    coverageErrors(['a  b'], { met: [{ item: 'a b', evidence: 'x' }], unmet: [] }),
+    [],
+    'whitespace is normalized',
+  );
 });

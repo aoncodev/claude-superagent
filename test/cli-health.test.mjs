@@ -39,6 +39,25 @@ function approvedRun(root) {
   return id;
 }
 
+/**
+ * A branch off the integration branch with one commit in `dir`, plus a ready ticket pointing at it, so
+ * `superagent merge` creates a real merge commit. Leaves the main checkout on the integration branch.
+ */
+function readyTicket(root, id, { ticketId = 'T1', dir = 'a', branch = 'worktree-agent-T1' } = {}) {
+  const run = loadRun(root, id);
+  sh(root, ['checkout', '-q', '-b', branch]);
+  mkdirSync(join(root, dir), { recursive: true });
+  writeFileSync(join(root, dir, 'file.txt'), `${ticketId}\n`);
+  sh(root, ['add', '.']);
+  sh(root, ['commit', '-q', '-m', `${ticketId}: work`]);
+  sh(root, ['checkout', '-q', run.integration_branch]);
+  saveTicket(root, id, {
+    id: ticketId, title: ticketId, kind: 'work', wave: 1, scope: `Build ${dir}`, owns: [`${dir}/`],
+    reads: [], contracts: [], depends_on: [], done_when: ['works'],
+    status: 'ready', origin: 'plan', agent_id: `ag-${ticketId}`, worktree: null, branch, attempts: 0, answer: null,
+  });
+}
+
 test('doctor passes in a temp git repo and only warns about missing state', () => {
   const root = makeRepo();
   const r = runCli(['doctor'], { cwd: root });
@@ -85,20 +104,42 @@ test('audit ok on a clean approved run and appends an audited event', () => {
   const audited = loadEvents(root, id).at(-1);
   assert.equal(audited.type, 'audited');
   assert.equal(audited.ok, true);
-  assert.deepEqual(audited.checks, [{ name: 'base tip', ok: true }, { name: 'guard self-tests', ok: true }]);
+  assert.deepEqual(audited.checks, [
+    { name: 'base tip', ok: true },
+    { name: 'integration commits', ok: true },
+    { name: 'clean tree', ok: true },
+    { name: 'guard self-tests', ok: true },
+  ]);
 });
 
-test('audit warns, but still passes, off the integration branch and with a dirty tree', () => {
+test('audit warns, but still passes, off the integration branch', () => {
   const root = makeRepo();
   const id = approvedRun(root);
   sh(root, ['checkout', '-q', 'main']);
-  writeFileSync(join(root, 'dirty.txt'), 'not committed\n');
   const r = runCli(['audit'], { cwd: root });
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /^warn: main checkout is on main, expected superagent\//m);
-  assert.match(r.stdout, /^warn: 1 uncommitted change: dirty\.txt$/m);
   assert.match(r.stdout, /^audit ok$/m);
   assert.equal(loadEvents(root, id).at(-1).ok, true);
+});
+
+test('audit exits 3 on a dirty working tree and records the failed clean tree check', () => {
+  const root = makeRepo();
+  const id = approvedRun(root);
+  writeFileSync(join(root, 'dirty.txt'), 'not committed\n');
+  const r = runCli(['audit'], { cwd: root });
+  assert.equal(r.code, 3, r.stderr);
+  assert.match(r.stdout, /^audit FAILED$/m);
+  assert.match(r.stdout, /^FAIL: clean tree: 1 uncommitted change: dirty\.txt$/m);
+  assert.doesNotMatch(r.stdout, /^warn:/m);
+  const audited = loadEvents(root, id).at(-1);
+  assert.equal(audited.type, 'audited');
+  assert.equal(audited.ok, false);
+  assert.equal(audited.checks.find((c) => c.name === 'base tip').ok, true);
+  assert.equal(audited.checks.find((c) => c.name === 'integration commits').ok, true);
+  const clean = audited.checks.find((c) => c.name === 'clean tree');
+  assert.equal(clean.ok, false);
+  assert.match(clean.detail, /dirty\.txt/);
 });
 
 test('audit exits 3 when the base branch moved and prints the offending commit', () => {
@@ -126,6 +167,79 @@ test('audit exits 3 when the base branch moved and prints the offending commit',
   const base = audited.checks.find((c) => c.name === 'base tip');
   assert.equal(base.ok, false);
   assert.match(base.detail, /change base after approval/);
+});
+
+test('audit passes a clean run whose integration branch holds only recorded merges', () => {
+  const root = makeRepo();
+  const id = approvedRun(root);
+  readyTicket(root, id, { ticketId: 'T1', dir: 'a', branch: 'worktree-agent-T1' });
+  readyTicket(root, id, { ticketId: 'T2', dir: 'b', branch: 'worktree-agent-T2' });
+  for (const t of ['T1', 'T2']) {
+    const r = runCli(['merge', t], { cwd: root });
+    assert.equal(r.code, 0, r.stderr);
+  }
+  const run = loadRun(root, id);
+  const recorded = loadEvents(root, id).filter((e) => e.type === 'merged').map((e) => e.sha);
+  assert.equal(recorded.length, 2);
+  const firstParent = sh(root, ['rev-list', '--first-parent', `${run.base_sha}..${run.integration_branch}`]).split('\n');
+  assert.deepEqual([...firstParent].sort(), [...recorded].sort());
+
+  const r = runCli(['audit'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^audit ok$/m);
+  assert.doesNotMatch(r.stdout, /FAIL/);
+  const audited = loadEvents(root, id).at(-1);
+  assert.equal(audited.type, 'audited');
+  assert.equal(audited.ok, true);
+  assert.equal(audited.checks.find((c) => c.name === 'integration commits').ok, true);
+  assert.equal(audited.checks.find((c) => c.name === 'clean tree').ok, true);
+});
+
+test('audit exits 3 and names a rogue commit made in the main checkout on the integration branch', () => {
+  const root = makeRepo();
+  const id = approvedRun(root);
+  readyTicket(root, id); // T1, its worktree-agent-T1 branch, one commit
+  const merged = runCli(['merge', 'T1'], { cwd: root });
+  assert.equal(merged.code, 0, merged.stderr);
+
+  // A commit outside any ticket: made directly on the integration branch in the main checkout.
+  writeFileSync(join(root, 'rogue.txt'), 'outside any ticket\n');
+  sh(root, ['add', 'rogue.txt']);
+  sh(root, ['commit', '-q', '-m', 'rogue commit made in the main checkout']);
+  const rogueOneline = sh(root, ['log', '--oneline', '-1', 'HEAD']);
+
+  const r = runCli(['audit'], { cwd: root });
+  assert.equal(r.code, 3, r.stderr);
+  assert.match(r.stdout, /^audit FAILED$/m);
+  assert.match(r.stdout, /^FAIL: integration commits: /m);
+  assert.ok(r.stdout.includes(rogueOneline), r.stdout);
+  assert.match(r.stdout, /A commit outside any ticket was made in the main checkout/);
+  assert.match(r.stdout, /remove them from the integration branch/);
+
+  const audited = loadEvents(root, id).at(-1);
+  assert.equal(audited.type, 'audited');
+  assert.equal(audited.ok, false);
+  assert.equal(audited.checks.find((c) => c.name === 'base tip').ok, true);
+  assert.equal(audited.checks.find((c) => c.name === 'clean tree').ok, true);
+  const check = audited.checks.find((c) => c.name === 'integration commits');
+  assert.equal(check.ok, false);
+  assert.match(check.detail, /rogue commit made in the main checkout/);
+  assert.ok(check.detail.includes(rogueOneline), check.detail);
+  const mergedSha = loadEvents(root, id).find((e) => e.type === 'merged').sha;
+  const mergedOneline = sh(root, ['log', '--oneline', '-1', mergedSha]);
+  assert.ok(!check.detail.includes(mergedOneline), 'the recorded merge is not reported');
+});
+
+test('audit on a run whose integration branch no longer resolves is a state error (exit 2)', () => {
+  const root = makeRepo();
+  const id = approvedRun(root);
+  const run = loadRun(root, id);
+  sh(root, ['checkout', '-q', 'main']);
+  sh(root, ['branch', '-D', run.integration_branch]);
+  const r = runCli(['audit'], { cwd: root });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /cannot read the integration branch/);
+  assert.doesNotMatch(r.stdout, /audit ok/);
 });
 
 test('audit outside a git repository warns and exits 2', () => {

@@ -1,6 +1,8 @@
 {
   "name": "superagent",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Run parallel worker subagents in isolated git worktrees, with hook-enforced boundaries, a next-action scheduler, plan preflight, reviewer isolation and a small Node CLI for claiming, tracking and integrating work.",
-  "author": { "name": "Aon" }
+  "author": {
+    "name": "Aon"
+  }
 }
