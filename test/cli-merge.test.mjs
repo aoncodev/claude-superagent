@@ -322,7 +322,7 @@ test('verify-result passed moves to reviewing; failed stays in verifying', () =>
   assert.equal(events(root, id, 'verified')[1].passed, true);
 });
 
-test('review rejects a review missing extras', () => {
+test('review rejects a review missing extras or met', () => {
   const { root, id } = setup();
   setPhase(root, 'reviewing');
   const bad = writeJson(root, 'review.json', { unmet: [], contradictions: [] });
@@ -330,21 +330,31 @@ test('review rejects a review missing extras', () => {
   assert.equal(r.code, 1);
   assert.match(r.stderr, /extras/);
   assert.ok(!existsSync(join(stateDir(root), 'runs', id, 'reviews')));
-  const bad2 = writeJson(root, 'review2.json', { unmet: [{ item: 'x' }], extras: [], contradictions: [] });
+  const bad2 = writeJson(root, 'review2.json', { met: [], unmet: [{ item: 'x' }], extras: [], contradictions: [] });
   assert.equal(runCli(['review', '--file', bad2], { cwd: root }).code, 1);
+  const noMet = writeJson(root, 'review3.json', { unmet: [], extras: [], contradictions: [] });
+  const m = runCli(['review', '--file', noMet], { cwd: root });
+  assert.equal(m.code, 1);
+  assert.match(m.stderr, /met/);
+  assert.ok(!existsSync(join(stateDir(root), 'runs', id, 'reviews')));
 });
 
 test('review writes reviews/<n>.json with increasing n and an event', () => {
   const { root, id } = setup();
-  assert.equal(runCli(['review', '--file', writeJson(root, 'r.json', { unmet: [], extras: [], contradictions: [] })], { cwd: root }).code, 3, 'not reviewing yet');
+  assert.equal(runCli(['review', '--file', writeJson(root, 'r.json', { met: [], unmet: [], extras: [], contradictions: [] })], { cwd: root }).code, 3, 'not reviewing yet');
   setPhase(root, 'reviewing');
-  const good = writeJson(root, 'r.json', { unmet: [{ item: 'login', evidence: 'no route' }], extras: [], contradictions: [] });
+  const good = writeJson(root, 'r.json', {
+    met: [{ item: 'login works', evidence: 'a/login.ts' }],
+    unmet: [{ item: 'logout', evidence: 'no route' }], extras: [], contradictions: [],
+  });
   assert.equal(runCli(['review', '--file', good], { cwd: root }).code, 0);
   assert.equal(runCli(['review', '--file', good], { cwd: root }).code, 0);
   const dir = join(stateDir(root), 'runs', id, 'reviews');
   assert.deepEqual(readdirSync(dir).sort(), ['1.json', '2.json']);
-  assert.equal(JSON.parse(readFileSync(join(dir, '1.json'), 'utf8')).unmet[0].item, 'login');
+  assert.equal(JSON.parse(readFileSync(join(dir, '1.json'), 'utf8')).met[0].item, 'login works');
+  assert.equal(JSON.parse(readFileSync(join(dir, '1.json'), 'utf8')).unmet[0].item, 'logout');
   assert.equal(events(root, id, 'reviewed').length, 2);
+  assert.equal(events(root, id, 'reviewed')[0].met, 1);
 });
 
 test('finish is allowed from verifying or reviewing, sets done and clears active', () => {
@@ -360,7 +370,7 @@ test('finish is allowed from verifying or reviewing, sets done and clears active
   const b = setup();
   setPhase(b.root, 'verifying');
   assert.equal(runCli(['verify-result', '--passed', 'true'], { cwd: b.root }).code, 0);
-  assert.equal(runCli(['review', '--file', writeJson(b.root, 'rv.json', { unmet: [], extras: [], contradictions: [] })], { cwd: b.root }).code, 0);
+  assert.equal(runCli(['review', '--file', writeJson(b.root, 'rv.json', { met: [], unmet: [], extras: [], contradictions: [] })], { cwd: b.root }).code, 0);
   assert.equal(runCli(['finish'], { cwd: b.root }).code, 0);
   assert.equal(loadRun(b.root, b.id).phase, 'done');
 });
@@ -503,7 +513,10 @@ test('regression #8: finish needs a recorded verification (and a review when rev
   assert.match(noReview.stderr, /review/);
   assert.equal(loadRun(root, id).phase, 'reviewing');
 
-  const rv = writeJson(root, 'rv.json', { unmet: [{ item: 'login', evidence: 'no route' }], extras: [], contradictions: [] });
+  const rv = writeJson(root, 'rv.json', {
+    met: [{ item: 'login works', evidence: 'a/login.ts' }],
+    unmet: [{ item: 'logout', evidence: 'no route' }], extras: [], contradictions: [],
+  });
   assert.equal(runCli(['review', '--file', rv], { cwd: root }).code, 0);
   const r = runCli(['finish'], { cwd: root });
   assert.equal(r.code, 0, r.stderr);

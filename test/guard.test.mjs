@@ -511,3 +511,63 @@ test('decideBash: a worker may still run worker commands, and the orchestrator m
 test('decideBash: the worker check applies even when the run is not guarded', () => {
   assert.match(denied(decideBash({ command: 'superagent approve', run: null, config: cfg, fromWorker: true })), /orchestrator/);
 });
+
+// ---- reviewer isolation (v0.2) ----
+
+const MAIN = '/repo/main';
+const reviewerReason = /Blocked: the fidelity reviewer works only in its review worktree and must not read run state\./;
+const R = (command, extra = {}) => decideBash({ command, run: null, config: cfg, reviewer: true, mainRoot: MAIN, ...extra });
+
+test('reviewer isolation: commands naming the main checkout or run state are denied', () => {
+  for (const c of [
+    `cat ${MAIN}/.superagent/runs/r1/run.json`,
+    `cat ${MAIN}/README.md`,
+    `cd ${MAIN} && ls`,
+    `git -C ${MAIN} status`,
+    `cd ${MAIN.toUpperCase()} && ls`, // case-insensitive
+    'cat .superagent/runs/r1/run.json',
+    'cd .superagent/runs && ls',
+    'ls .SUPERAGENT/RUNS/r1',
+  ]) {
+    assert.match(denied(R(c)), reviewerReason, c);
+  }
+});
+
+test('reviewer isolation: ordinary reads inside the review worktree are allowed', () => {
+  for (const c of [
+    'git diff abc123..superagent/r1', 'git status', 'git log --oneline', 'superagent show --run',
+    'superagent show --charter', 'ls', 'cat README.md', 'npm test', 'cd /tmp/superagent-review-r1-abc && ls',
+  ]) {
+    assert.deepEqual(R(c), { allow: true }, c);
+  }
+});
+
+test('reviewer isolation: applies even when the run is not guarded or absent', () => {
+  for (const r of [null, run('proposing'), run('done')]) {
+    assert.match(denied(decideBash({ command: `cd ${MAIN} && ls`, run: r, config: cfg, reviewer: true, mainRoot: MAIN })), reviewerReason, String(r?.phase));
+    assert.match(denied(decideBash({ command: `cat ${MAIN}/.superagent/runs/x`, run: r, config: cfg, reviewer: true, mainRoot: MAIN })), reviewerReason, String(r?.phase));
+  }
+});
+
+test('reviewer isolation: run-state writes stay denied with the reviewer reason', () => {
+  const all = { allowed_actions: ['push', 'deploy', 'publish', 'production'] };
+  for (const c of [
+    `echo x > ${MAIN}/.superagent/runs/r1/run.json`,
+    `rm -rf ${MAIN}`,
+    'echo x > .superagent/runs/r1/run.json',
+    'mv a .superagent/runs/r1/charter.r1.md',
+  ]) {
+    assert.match(denied(R(c, { run: run('running', all) })), reviewerReason, c);
+  }
+  // A run-state write that names neither the main root nor runs/ keeps the ordinary reason.
+  assert.match(denied(R('rm .superagent/active')), /Run state is changed only through the superagent CLI\./);
+  assert.match(denied(R('echo x > .superagent/config.json')), /Run state is changed only through the superagent CLI\./);
+});
+
+test('reviewer isolation: mainRoot is optional; without it only run-state references are denied', () => {
+  assert.match(denied(decideBash({ command: 'cat .superagent/runs/x', run: null, config: cfg, reviewer: true })), reviewerReason);
+  assert.deepEqual(decideBash({ command: `cd ${MAIN} && ls`, run: null, config: cfg, reviewer: true }), { allow: true });
+  assert.deepEqual(decideBash({ command: `cd ${MAIN} && ls`, run: null, config: cfg, reviewer: true, mainRoot: '' }), { allow: true });
+  // Without reviewer, the same command is untouched.
+  assert.deepEqual(decideBash({ command: `cd ${MAIN} && ls`, run: null, config: cfg }), { allow: true });
+});

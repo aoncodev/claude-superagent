@@ -37,6 +37,13 @@ await runGuard(({ payload, root }) => {
       fromWorker = false;
     }
   }
-  const d = decideBash({ command, run, config, fromWorker });
+  const d = decideBash({
+    command,
+    run,
+    config,
+    fromWorker,
+    reviewer: payload.agent_type === 'superagent:fidelity-reviewer',
+    mainRoot: root,
+  });
   return warning ? { ...d, warning } : d;
 });

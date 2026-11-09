@@ -298,3 +298,45 @@ test('guard-bash: a worker cannot approve a Charter revision by cd-ing into the 
   allowed(runHook(BASH, payload(root, 'Bash', { command: 'superagent approve' })));
   allowed(runHook(BASH, payload(wt, 'Bash', { command: 'superagent report T1 --file r.json' })));
 });
+
+// ---- reviewer isolation (v0.2) ----
+
+const REVIEWER = { agent_type: 'superagent:fidelity-reviewer', agent_id: 'r1' };
+const REVIEWER_REASON = /fidelity reviewer works only in its review worktree and must not read run state/;
+const reviewerBash = (root, command) => runHook(BASH, payload(root, 'Bash', { command }, REVIEWER));
+
+test('guard-bash: the fidelity reviewer is kept out of the main checkout and run state', () => {
+  const { root } = setup('running');
+  for (const command of [
+    `cat ${root}/.superagent/runs/r1/run.json`,
+    `cd ${root} && ls`,
+    `cat ${root}/README.md`,
+    'cat .superagent/runs/r1/run.json',
+    'ls .superagent/runs',
+  ]) {
+    assert.match(denyReason(reviewerBash(root, command)), REVIEWER_REASON, command);
+  }
+  for (const command of ['git diff main...HEAD', 'git status', 'superagent show --run', 'superagent show --charter', 'ls']) {
+    allowed(reviewerBash(root, command));
+  }
+  // The same main-root mentions are ordinary for the orchestrator.
+  allowed(runHook(BASH, payload(root, 'Bash', { command: `ls ${root}` })));
+});
+
+test('guard-bash: reviewer denial holds with no guarded run, and run-state writes stay denied', () => {
+  // proposing: the run has no integration branch yet, so nothing is guarded.
+  const a = setup('proposing');
+  assert.match(denyReason(reviewerBash(a.root, `cd ${a.root} && ls`)), REVIEWER_REASON);
+  assert.match(denyReason(reviewerBash(a.root, 'cat .superagent/runs/r1/run.json')), REVIEWER_REASON);
+  assert.match(denyReason(reviewerBash(a.root, 'echo x > .superagent/runs/r1/run.json')), REVIEWER_REASON);
+  assert.match(denyReason(reviewerBash(a.root, 'rm .superagent/active')), /superagent CLI/);
+
+  // No active run at all: the reviewer is still identified by agent type.
+  const b = setup('proposing');
+  writeFileSync(join(b.root, '.superagent', 'active'), '');
+  assert.match(denyReason(runHook(BASH, payload(b.root, 'Bash', { command: `cd ${b.root} && ls` }, REVIEWER))), REVIEWER_REASON);
+
+  // Run-state writes are still denied for ordinary callers.
+  const c = setup('running');
+  assert.match(denyReason(runHook(BASH, payload(c.root, 'Bash', { command: 'echo x > .superagent/runs/r1/run.json' }))), /superagent CLI/);
+});

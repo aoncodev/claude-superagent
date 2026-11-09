@@ -14,6 +14,9 @@ import planCommands from '../lib/commands/plan.mjs';
 import ticketCommands from '../lib/commands/ticket.mjs';
 import mergeCommands from '../lib/commands/merge.mjs';
 import reviewCommands from '../lib/commands/review.mjs';
+import healthCommands from '../lib/commands/health.mjs';
+import nextCommands from '../lib/commands/next.mjs';
+import metaCommands from '../lib/commands/meta.mjs';
 
 // WORKER_COMMANDS (lib/guard.mjs) are the commands a worker may run. Every other command is the
 // orchestrator's, and is refused from inside a linked worktree, where workers live.
@@ -24,6 +27,9 @@ const GROUPS = [
   ticketCommands,
   mergeCommands,
   reviewCommands,
+  healthCommands,
+  nextCommands,
+  metaCommands,
 ];
 
 async function main(argv) {

@@ -59,11 +59,14 @@ test('propose stores run fields, normalized tickets and contracts', () => {
   assert.deepEqual(run.allowed_actions, []);
   assert.equal(run.project.kind, 'existing');
   assert.equal(run.title, 'Login page');
+  assert.deepEqual(run.shared_files, []);
   const tickets = loadTickets(root, id);
   assert.deepEqual(tickets.map((t) => t.id), ['T1', 'T2', 'T3']);
   assert.deepEqual(tickets[0].owns, ['docs/']);
   assert.deepEqual(tickets[0].reads, ['README.md']);
   assert.deepEqual(tickets[2].owns, ['src/ui', 'web/index.html']);
+  assert.deepEqual(tickets[0].depends_on, []);
+  assert.equal(tickets[0].model, null);
   assert.equal(tickets[0].status, 'planned');
   assert.equal(tickets[0].origin, 'plan');
   assert.equal(tickets[0].attempts, 0);
@@ -291,4 +294,56 @@ test('regression #5: an invalid JSON revision exits 1 and writes nothing', () =>
   }
   assert.ok(!existsSync(join(runDirOf(root, id), 'charter.r2.md')));
   assert.equal(loadRun(root, id).phase, 'running');
+});
+
+// ---- v0.2: shared_files, depends_on, model ----
+
+test('propose stores shared_files, depends_on and model, and renders the Shared files section', () => {
+  const p = plan();
+  p.shared_files = ['./docs/../docs/auth.md', 'docs/types.ts'];
+  p.tickets[1].depends_on = ['T1'];
+  p.tickets[1].model = 'claude-sonnet-4';
+  const { root, id, path } = setup(p);
+  const r = runCli(['propose', path], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /Shared files:\n  docs\/auth\.md\n  docs\/types\.ts\n/);
+  assert.ok(r.stdout.indexOf('C1 · Auth API') < r.stdout.indexOf('Shared files'));
+  const run = loadRun(root, id);
+  assert.deepEqual(run.shared_files, ['docs/auth.md', 'docs/types.ts']);
+  const tickets = loadTickets(root, id);
+  assert.deepEqual(tickets[1].depends_on, ['T1']);
+  assert.equal(tickets[1].model, 'claude-sonnet-4');
+  assert.deepEqual(tickets[2].depends_on, []);
+  assert.equal(tickets[2].model, null);
+  const again = runCli(['proposal'], { cwd: root });
+  assert.equal(again.code, 0, again.stderr);
+  assert.equal(again.stdout, r.stdout, 'proposal reprints shared files');
+});
+
+test('propose rejects invalid shared_files, depends_on and model with exit 1 and writes nothing', () => {
+  const p = plan();
+  p.shared_files = ['docs/*.ts'];
+  p.tickets[1].depends_on = ['T9'];
+  p.tickets[2].model = '';
+  const { root, id, path } = setup(p);
+  const r = runCli(['propose', path], { cwd: root });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /shared_files entry .*looks like a glob/);
+  assert.match(r.stderr, /T2: depends_on unknown ticket id "T9"/);
+  assert.match(r.stderr, /T3: model must be a non-empty string/);
+  assert.equal(loadRun(root, id).phase, 'proposing');
+  assert.ok(!existsSync(join(runDirOf(root, id), 'charter.r1.md')));
+  assert.deepEqual(loadTickets(root, id), []);
+});
+
+test('propose rejects a shared file owned by a work ticket and a depends_on in a later wave', () => {
+  const p = plan();
+  p.shared_files = ['src/api/shared.ts'];
+  p.tickets[2].wave = 3;
+  p.tickets[1].depends_on = ['T3']; // T3 is now in a later wave
+  const { root, path } = setup(p);
+  const r = runCli(['propose', path], { cwd: root });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /shared_files entry .*must not be owned by a work or fix ticket \(T2 owns it\)/);
+  assert.match(r.stderr, /T2: depends_on T3 is in wave 3, later than T2's wave 2/);
 });
