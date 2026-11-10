@@ -195,9 +195,18 @@ test('review rejects a missing or invalid met list and stores nothing', () => {
   assert.ok(!existsSync(dir), 'no review is stored');
 });
 
+test('review accepts a coverage match that differs only by case and trailing punctuation', () => {
+  const { root } = reviewing();
+  const review = { met: [{ item: 'A.', evidence: 'a/file.txt' }], unmet: [], extras: [], contradictions: [] };
+  const r = runCli(['review', '--file', tmpFile(review)], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+});
+
 test('coverageErrors requires every in-scope Charter item in exactly one of met or unmet', () => {
   const item = (name) => ({ item: name, evidence: 'x' });
   assert.deepEqual(coverageErrors(['a', 'b'], { met: [item('a')], unmet: [item('b')] }), []);
+  assert.deepEqual(coverageErrors(['Alpha works.'], { met: [{ item: 'ALPHA works', evidence: 'x' }], unmet: [] }), [], 'case and punctuation are ignored');
+  assert.deepEqual(coverageErrors(['Alpha works!'], { met: [], unmet: [{ item: 'alpha works.', evidence: 'x' }] }), []);
   assert.deepEqual(
     coverageErrors(['a'], { met: [item('a'), item('a')], unmet: [] }).length,
     0,

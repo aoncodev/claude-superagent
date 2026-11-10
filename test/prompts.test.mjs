@@ -127,6 +127,8 @@ test('orchestrate skill: next drives the loop, audit precedes verification and t
   assert.ok([setup, launch, record, close].every((i) => i >= 0), 'the reviewer worktree flow names every step');
   assert.ok(setup < launch && launch < record && record < close, 'order: review-setup, launch reviewer, review --file, review-close');
   assert.ok(body.includes('Review worktree:'), 'the reviewer prompt carries the worktree path');
+  assert.match(body, /correct the JSON/i, 'a rejected review is sent back to the reviewer once');
+  assert.match(body, /send the reviewer the exact error text once/i, 'the reviewer gets exactly one correction round');
 });
 
 test('orchestrate skill: launch order is start-ticket, Agent, set-agent, with the per-ticket model', () => {
@@ -241,11 +243,11 @@ test('regression #17: README states the diff-check gaps and how a fresh worker c
   assert.match(readme, /new worktree[^\n]*merges the earlier/i, 'a fresh worker gets a new worktree and merges the earlier branch');
 });
 
-test('package and plugin manifests are version 0.2.1 and require Node >= 22', () => {
+test('package and plugin manifests are version 0.2.2 and require Node >= 22', () => {
   const pkg = JSON.parse(read('package.json'));
-  assert.equal(pkg.version, '0.2.1');
+  assert.equal(pkg.version, '0.2.2');
   assert.equal(pkg.engines?.node, '>=22');
-  assert.equal(JSON.parse(read('.claude-plugin/plugin.json')).version, '0.2.1');
+  assert.equal(JSON.parse(read('.claude-plugin/plugin.json')).version, '0.2.2');
 });
 
 test('skill and commands name only commands the CLI has', async () => {

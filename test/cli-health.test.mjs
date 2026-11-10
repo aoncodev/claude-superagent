@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync,
+  appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -22,6 +22,22 @@ const sh = (cwd, args) => {
 };
 
 const emptyDir = () => realpathSync(mkdtempSync(join(tmpdir(), 'superagent-health-')));
+
+/** An injected pluginRoot with a complete layout; `transform` may edit the parsed hooks.json. */
+function pluginRootWithHooks(transform = () => {}) {
+  const pluginRoot = emptyDir();
+  mkdirSync(join(pluginRoot, 'hooks'), { recursive: true });
+  mkdirSync(join(pluginRoot, 'bin'), { recursive: true });
+  for (const f of ['guard-files.mjs', 'guard-bash.mjs', 'guard-read.mjs']) {
+    writeFileSync(join(pluginRoot, 'hooks', f), '// stub\n');
+  }
+  writeFileSync(join(pluginRoot, 'bin', 'superagent'), '#!/usr/bin/env node\n');
+  chmodSync(join(pluginRoot, 'bin', 'superagent'), 0o755);
+  const hooks = JSON.parse(readFileSync(join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
+  transform(hooks);
+  writeFileSync(join(pluginRoot, 'hooks', 'hooks.json'), `${JSON.stringify(hooks, null, 2)}\n`);
+  return pluginRoot;
+}
 
 function initRun(root, title = 'My Task') {
   const r = runCli(['init', '--title', title], { cwd: root });
@@ -82,6 +98,33 @@ test('runDoctor FAILs when an injected pluginRoot is missing a guard file', () =
   assert.equal(res.ok, false);
   assert.ok(res.lines.some((l) => /^FAIL: plugin layout: .*hooks\/guard-files\.mjs/.test(l)), res.lines.join('\n'));
   assert.ok(res.lines.some((l) => /^FAIL: hooks\.json registrations/.test(l)), res.lines.join('\n'));
+});
+
+test('runDoctor FAILs when hooks.json is missing the Read|Grep|Glob registration', () => {
+  const cwd = makeRepo();
+  const pluginRoot = pluginRootWithHooks((hooks) => {
+    hooks.hooks.PreToolUse = hooks.hooks.PreToolUse.filter((e) => e.matcher !== 'Read|Grep|Glob');
+  });
+  const res = runDoctor({ pluginRoot, cwd });
+  assert.equal(res.ok, false);
+  assert.ok(res.lines.some((l) => /^ok: plugin layout /.test(l)), res.lines.join('\n'));
+  const line = res.lines.find((l) => l.startsWith('FAIL: hooks.json registrations'));
+  assert.ok(line, res.lines.join('\n'));
+  assert.match(line, /Read\|Grep\|Glob/);
+  assert.match(line, /guard-read\.mjs/);
+});
+
+test('runDoctor FAILs when a PreToolUse matcher runs the wrong guard script', () => {
+  const cwd = makeRepo();
+  const pluginRoot = pluginRootWithHooks((hooks) => {
+    hooks.hooks.PreToolUse.find((e) => e.matcher === 'Bash').hooks[0].command = 'node "${CLAUDE_PLUGIN_ROOT}/hooks/guard-files.mjs"';
+  });
+  const res = runDoctor({ pluginRoot, cwd });
+  assert.equal(res.ok, false);
+  const line = res.lines.find((l) => l.startsWith('FAIL: hooks.json registrations'));
+  assert.ok(line, res.lines.join('\n'));
+  assert.match(line, /Bash/);
+  assert.match(line, /hooks\/guard-bash\.mjs/);
 });
 
 test('runDoctor decision self-tests deny run-state writes and git push, and allow git status', () => {
@@ -193,6 +236,63 @@ test('audit passes a clean run whose integration branch holds only recorded merg
   assert.equal(audited.ok, true);
   assert.equal(audited.checks.find((c) => c.name === 'integration commits').ok, true);
   assert.equal(audited.checks.find((c) => c.name === 'clean tree').ok, true);
+});
+
+test('audit does not call the merge or fix commit rogue, and flags the pre-merge direct commit', () => {
+  const root = makeRepo();
+  const id = approvedRun(root);
+  readyTicket(root, id); // T1's branch changes a/file.txt
+  // A conflicting change on the integration branch, so the merge stops on a conflict.
+  mkdirSync(join(root, 'a'), { recursive: true });
+  writeFileSync(join(root, 'a/file.txt'), 'integration\n');
+  sh(root, ['add', 'a/file.txt']);
+  sh(root, ['commit', '-q', '-m', 'integration change']);
+  const integrationSha = sh(root, ['rev-parse', 'HEAD']);
+
+  assert.equal(runCli(['merge', 'T1'], { cwd: root }).code, 3);
+  // Commit the conflicted merge with the markers still in it, as a user might: merge-continue refuses.
+  sh(root, ['add', 'a/file.txt']);
+  sh(root, ['commit', '-q', '--no-edit']);
+  const mergeSha = sh(root, ['rev-parse', 'HEAD']);
+  const refused = runCli(['merge-continue'], { cwd: root });
+  assert.equal(refused.code, 3, refused.stdout);
+  assert.match(refused.stderr, /remove the conflict markers and commit the fix/);
+
+  // Remove the markers, commit the fix, and finish: both commits belong to this merge, not to a rogue.
+  writeFileSync(join(root, 'a/file.txt'), 'resolved\n');
+  sh(root, ['add', 'a/file.txt']);
+  sh(root, ['commit', '-q', '-m', 'fix: resolve conflict markers']);
+  const fixSha = sh(root, ['rev-parse', 'HEAD']);
+  const done = runCli(['merge-continue'], { cwd: root });
+  assert.equal(done.code, 0, done.stderr);
+  const merged = loadEvents(root, id).filter((e) => e.type === 'merged').at(-1);
+  assert.equal(merged.sha, fixSha);
+  // The merge and fix commits belong to this merge; the integration-branch commit made outside a
+  // ticket does not, so audit still sees it (this is the anti-laundering regression).
+  assert.deepEqual(merged.shas, [mergeSha, fixSha]);
+  assert.ok(!merged.shas.includes(integrationSha));
+
+  const integrationOneline = sh(root, ['log', '--oneline', '-1', integrationSha]);
+  const mergeOneline = sh(root, ['log', '--oneline', '-1', mergeSha]);
+  const fixOneline = sh(root, ['log', '--oneline', '-1', fixSha]);
+  const audit = runCli(['audit'], { cwd: root });
+  assert.equal(audit.code, 3, audit.stdout + audit.stderr);
+  assert.match(audit.stdout, /^FAIL: integration commits: /m);
+  assert.ok(audit.stdout.includes(integrationOneline), audit.stdout);
+  assert.ok(!audit.stdout.includes(mergeOneline), audit.stdout);
+  assert.ok(!audit.stdout.includes(fixOneline), audit.stdout);
+
+  // A later commit made directly in the main checkout is rogue too, and only real rogues are named.
+  writeFileSync(join(root, 'rogue.txt'), 'outside any ticket\n');
+  sh(root, ['add', 'rogue.txt']);
+  sh(root, ['commit', '-q', '-m', 'rogue commit made in the main checkout']);
+  const rogue = runCli(['audit'], { cwd: root });
+  assert.equal(rogue.code, 3);
+  assert.match(rogue.stdout, /^FAIL: integration commits: /m);
+  assert.match(rogue.stdout, /rogue commit made in the main checkout/);
+  assert.ok(rogue.stdout.includes(integrationOneline), rogue.stdout);
+  assert.ok(!rogue.stdout.includes(mergeOneline), rogue.stdout);
+  assert.ok(!rogue.stdout.includes(fixOneline), rogue.stdout);
 });
 
 test('audit exits 3 and names a rogue commit made in the main checkout on the integration branch', () => {

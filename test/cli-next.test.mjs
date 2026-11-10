@@ -268,7 +268,7 @@ test('retarget points a stuck ticket at its replacement, and the ticket then lau
   assert.equal(runCli(['start-ticket', 'T2'], { cwd: root }).code, 0);
 });
 
-test('retarget rejects unknown, self, duplicate, later-wave and cyclic dependencies', () => {
+test('retarget rejects unknown, self, duplicate and cyclic dependencies', () => {
   const { root } = setup({ tickets: [ticket('T1', 'a', 1), ticket('T2', 'b', 1, { depends_on: ['T1'] })] });
   const cases = [
     [['retarget', 'T1', '--depends-on', 'T9'], /unknown ticket/],
@@ -281,10 +281,30 @@ test('retarget rejects unknown, self, duplicate, later-wave and cyclic dependenc
     assert.equal(r.code, 1, JSON.stringify(args));
     assert.match(r.stderr, re, JSON.stringify(args));
   }
-  const later = setup({ tickets: [ticket('T1', 'a', 1), ticket('T2', 'b', 2)] });
-  const r = runCli(['retarget', 'T1', '--depends-on', 'T2'], { cwd: later.root });
-  assert.equal(r.code, 1);
-  assert.match(r.stderr, /later than T1's wave/);
+});
+
+test('retarget moves a ticket to its replacement wave, and the handback flow then works', () => {
+  const { root, id } = setup({ tickets: [ticket('T1', 'a', 1), ticket('T2', 'b', 1, { depends_on: ['T1'] })] });
+  assert.equal(runNext(root), 'launch T1');
+  assert.equal(runCli(['start-ticket', 'T1', '--agent', 'ag-T1'], { cwd: root }).code, 0);
+  assert.equal(runCli(['mark-failed', 'T1', '--reason', 'the worker died twice'], { cwd: root }).code, 0);
+  const handback = writeReport(root, 't9.json', {
+    id: 'T9', title: 'Replacement for T1', kind: 'work', wave: 2, scope: 'Redo a', owns: ['a/'],
+    reads: [], contracts: [], done_when: ['works'],
+  });
+  assert.equal(runCli(['add-ticket', '--origin', 'handback', '--file', handback], { cwd: root }).code, 0);
+  const r = runCli(['retarget', 'T2', '--depends-on', 'T9'], { cwd: root });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /wave 1 -> 2/);
+  const retargeted = loadTickets(root, id).find((t) => t.id === 'T2');
+  assert.equal(retargeted.wave, 2);
+  assert.deepEqual(retargeted.depends_on, ['T9']);
+  assert.equal(runNext(root), 'launch T9');
+  const wt = work(root, 'T9', 'a/file.txt');
+  reportReady(root, 'T9', wt, 'a/file.txt');
+  assert.equal(runCli(['merge', 'T9'], { cwd: root }).code, 0);
+  assert.equal(runNext(root), 'launch T2');
+  assert.equal(runCli(['start-ticket', 'T2'], { cwd: root }).code, 0);
 });
 
 test('frontier never launches a ticket whose owns overlap an in-flight ticket', () => {

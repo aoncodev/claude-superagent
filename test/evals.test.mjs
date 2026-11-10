@@ -6,10 +6,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { metricsForRun } from '../evals/metrics.mjs';
-import { median, summarizeArm } from '../evals/run.mjs';
+import { liveEnvironmentError, median, summarizeArm, USER_CONFIG_WARNING } from '../evals/run.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ACCEPT = join(ROOT, 'evals', 'accept.mjs');
+const RUN = join(ROOT, 'evals', 'run.mjs');
 
 /** A hand-written run directory: run.json, two tickets and an event log. */
 function fixtureRun() {
@@ -89,8 +90,8 @@ test('metricsForRun: finished_at is null and duration keeps counting while the r
   assert.ok(Number.isInteger(m.duration_seconds) && m.duration_seconds >= 120);
 });
 
-test('evals/run.mjs: the default is a dry run for every arm, with prompts and acceptance commands', () => {
-  const r = spawnSync('node', [join(ROOT, 'evals', 'run.mjs')], { encoding: 'utf8' });
+test('evals/run.mjs: the default is a dry run for every arm, with prompts, contract and acceptance commands', () => {
+  const r = spawnSync('node', [RUN], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   const out = r.stdout;
   assert.match(out, /dry run/i, 'the default is a dry run');
@@ -108,12 +109,16 @@ test('evals/run.mjs: the default is a dry run for every arm, with prompts and ac
   for (const arm of ['single', 'waves', 'frontier']) {
     assert.ok(out.includes(`arm ${arm}`), `the dry run names the ${arm} arm`);
   }
-  const acceptanceLines = out.split('\n').filter((line) => line.includes(`acceptance: node`) && line.includes('accept.mjs'));
+  // The fixture is the harness-owned HTTP contract, stated in every arm prompt.
+  for (const contract of ['npm start', 'node server.js', 'process.env.PORT', 'BOOKMARKS_DB', 'POST /api/bookmarks', 'GET /api/bookmarks', 'newest first']) {
+    assert.ok(out.includes(contract), `the fixture contract states ${contract}`);
+  }
+  const acceptanceLines = out.split('\n').filter((line) => line.includes('acceptance: node') && line.includes('accept.mjs'));
   assert.equal(acceptanceLines.length, 3, 'each arm gets its own acceptance command');
 });
 
 test('evals/run.mjs: --runs N repeats every arm and shows all repetitions in the dry run', () => {
-  const r = spawnSync('node', [join(ROOT, 'evals', 'run.mjs'), '--runs', '2'], { encoding: 'utf8' });
+  const r = spawnSync('node', [RUN, '--runs', '2'], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   const out = r.stdout;
   assert.match(out, /runs per arm: 2/);
@@ -123,11 +128,41 @@ test('evals/run.mjs: --runs N repeats every arm and shows all repetitions in the
   assert.equal(acceptanceLines.length, 6, 'two repetitions of three arms');
 });
 
-test('evals/run.mjs: --isolated-config documents the throwaway config dir and the API-key requirement', () => {
-  const r = spawnSync('node', [join(ROOT, 'evals', 'run.mjs'), '--isolated-config'], { encoding: 'utf8' });
+test('evals/run.mjs: the default dry run uses the isolated throwaway config and names the API-key requirement', () => {
+  const r = spawnSync('node', [RUN], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
-  assert.ok(r.stdout.includes('CLAUDE_CONFIG_DIR'));
+  assert.ok(r.stdout.includes('CLAUDE_CONFIG_DIR='));
   assert.ok(r.stdout.includes('ANTHROPIC_API_KEY'));
+  assert.ok(r.stdout.includes('--user-config'), 'the opt-out is documented in the dry run');
+});
+
+test('evals/run.mjs: --user-config uses the caller config and warns that global plugins/hooks/CLAUDE.md apply', () => {
+  const r = spawnSync('node', [RUN, '--user-config'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!r.stdout.includes('CLAUDE_CONFIG_DIR='), 'no throwaway config dir in the commands');
+  assert.match(r.stdout, /the caller's real Claude Code configuration/);
+  assert.ok(r.stdout.includes('global plugins, hooks and CLAUDE.md'), 'the dry run states what --user-config loads');
+  assert.ok(r.stdout.includes(`claude -p 'reply ok'`));
+});
+
+test('evals/run.mjs: --isolated-config is an accepted alias for the default isolated config', () => {
+  const r = spawnSync('node', [RUN, '--isolated-config'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stdout.includes('CLAUDE_CONFIG_DIR='));
+  assert.ok(r.stdout.includes('ANTHROPIC_API_KEY'));
+
+  const both = spawnSync('node', [RUN, '--user-config', '--isolated-config'], { encoding: 'utf8' });
+  assert.equal(both.status, 1);
+  assert.match(both.stderr, /mutually exclusive/);
+});
+
+test('evals/run.mjs: live refuses the default isolated config without ANTHROPIC_API_KEY and accepts --user-config', () => {
+  const missing = liveEnvironmentError({ userConfig: false, env: {} });
+  assert.match(missing, /ANTHROPIC_API_KEY/);
+  assert.match(missing, /--user-config/);
+  assert.match(USER_CONFIG_WARNING, /global plugins, hooks and CLAUDE\.md/);
+  assert.equal(liveEnvironmentError({ userConfig: false, env: { ANTHROPIC_API_KEY: 'test-key' } }), null);
+  assert.equal(liveEnvironmentError({ userConfig: true, env: {} }), null);
 });
 
 test('summarizeArm: wall-clock stats, exit codes, acceptance rate and metric means across runs', () => {
@@ -189,75 +224,122 @@ test('summarizeArm: mean of two middle values for an even run count, null metric
   assert.equal(summary.metrics_mean, null);
 });
 
-/** Run evals/accept.mjs against a repository. */
-function runAccept(repo) {
-  return spawnSync('node', [ACCEPT, repo], { encoding: 'utf8' });
+// ---------------------------------------------------------------- harness-owned acceptance test
+
+const hasNpm = () => spawnSync('npm', ['--version'], { encoding: 'utf8' }).status === 0;
+
+/**
+ * A tiny fixture bookmarks app: durable JSON store at BOOKMARKS_DB, listens on PORT, implements
+ * POST/GET /api/bookmarks. `__CONFIG__` lets each test break one part of the contract.
+ */
+const CONTRACT_SERVER = `'use strict';
+const http = require('node:http');
+const fs = require('node:fs');
+const CONFIG = __CONFIG__;
+const dbPath = process.env.BOOKMARKS_DB || 'bookmarks.json';
+function read() {
+  try { return JSON.parse(fs.readFileSync(dbPath, 'utf8')); } catch { return []; }
+}
+function write(items) { fs.writeFileSync(dbPath, JSON.stringify(items)); }
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, 'http://127.0.0.1');
+  if (req.method === 'POST' && url.pathname === '/api/bookmarks') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      const bookmark = JSON.parse(body);
+      const items = read();
+      items.push({ url: bookmark.url, title: bookmark.title, created_at: Date.now() });
+      write(items);
+      res.writeHead(CONFIG.postStatus, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(bookmark));
+    });
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/api/bookmarks') {
+    let items = read();
+    if (CONFIG.newestFirst) items = items.slice().sort((a, b) => b.created_at - a.created_at);
+    if (!CONFIG.includeTitle) items = items.map((item) => ({ url: item.url }));
+    res.writeHead(CONFIG.getStatus, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(items));
+    return;
+  }
+  res.writeHead(404, { 'content-type': 'text/plain' });
+  res.end('not found');
+});
+server.listen(Number(process.env.PORT), '127.0.0.1');
+`;
+
+function contractServer(overrides = {}) {
+  const config = { postStatus: 201, getStatus: 200, newestFirst: true, includeTitle: true, ...overrides };
+  return CONTRACT_SERVER.replace('__CONFIG__', JSON.stringify(config));
 }
 
-/** Create a temp repository for the acceptance tests, optionally with a package.json or Makefile. */
-function makeAcceptRepo({ packageJson, makefile, init = true, commit = true } = {}) {
+/** A temp repository containing one fixture app; `server: null` means no app at all. */
+function makeContractRepo({ server = contractServer(), packageJson } = {}) {
   const repo = mkdtempSync(join(tmpdir(), 'superagent-eval-accept-'));
-  if (init) {
-    const r = spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repo, encoding: 'utf8' });
-    assert.equal(r.status, 0, r.stderr);
-    for (const [key, value] of [['user.email', 'eval@superagent.local'], ['user.name', 'superagent eval'], ['commit.gpgsign', 'false']]) {
-      const c = spawnSync('git', ['config', key, value], { cwd: repo, encoding: 'utf8' });
-      assert.equal(c.status, 0, c.stderr);
-    }
-  }
-  writeFileSync(join(repo, 'README.md'), '# eval fixture\n');
+  if (server !== null) writeFileSync(join(repo, 'server.js'), server);
   if (packageJson) writeFileSync(join(repo, 'package.json'), JSON.stringify(packageJson));
-  if (makefile) writeFileSync(join(repo, 'Makefile'), makefile);
-  if (commit) {
-    const add = spawnSync('git', ['add', '.'], { cwd: repo, encoding: 'utf8' });
-    assert.equal(add.status, 0, add.stderr);
-    const c = spawnSync('git', ['commit', '-q', '-m', 'initial commit'], { cwd: repo, encoding: 'utf8' });
-    assert.equal(c.status, 0, c.stderr);
-  }
   return repo;
 }
 
-const hasNpm = () => spawnSync('npm', ['--version'], { encoding: 'utf8' }).status === 0;
-const hasMake = () => spawnSync('make', ['--version'], { encoding: 'utf8' }).status === 0;
+function runAccept(repo) {
+  return spawnSync('node', [ACCEPT, repo], { encoding: 'utf8', timeout: 60000 });
+}
 
-test('evals/accept.mjs: runs npm test when package.json has scripts.test (pass and fail)', (t) => {
-  if (!hasNpm()) return t.skip('npm is not installed');
-  const passing = makeAcceptRepo({ packageJson: { scripts: { test: 'node -e "process.exit(0)"' } } });
-  const ok = runAccept(passing);
-  assert.equal(ok.status, 0, ok.stderr);
-  assert.match(ok.stdout, /acceptance PASS: npm test/);
-
-  const failing = makeAcceptRepo({ packageJson: { scripts: { test: 'node -e "process.exit(1)"' } } });
-  const bad = runAccept(failing);
-  assert.equal(bad.status, 1);
-  assert.match(bad.stdout, /acceptance FAIL: npm test/);
-  assert.match(bad.stdout, /output tail/);
-});
-
-test('evals/accept.mjs: runs make test when there is a Makefile and no npm test script', (t) => {
-  if (!hasMake()) return t.skip('make is not installed');
-  const repo = makeAcceptRepo({ makefile: 'test:\n\t@echo make-ok\n' });
+test('evals/accept.mjs: passes an app that implements the bookmarks HTTP contract (node server.js)', () => {
+  const repo = makeContractRepo();
   const r = runAccept(repo);
-  assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /acceptance PASS: make test/);
+  assert.equal(r.status, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /acceptance PASS/);
+  assert.match(r.stdout, /satisfies the bookmarks HTTP contract/);
 });
 
-test('evals/accept.mjs: fails with "no test command" when the project defines none', () => {
-  const repo = makeAcceptRepo();
+test('evals/accept.mjs: passes the same contract when the app is started with npm start', (t) => {
+  if (!hasNpm()) return t.skip('npm is not installed');
+  const repo = makeContractRepo({ packageJson: { name: 'eval-fixture', private: true, scripts: { start: 'node server.js' } } });
+  const r = runAccept(repo);
+  assert.equal(r.status, 0, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /acceptance PASS/);
+});
+
+test('evals/accept.mjs: fails when GET lists bookmarks oldest first (wrong order)', () => {
+  const repo = makeContractRepo({ server: contractServer({ newestFirst: false }) });
   const r = runAccept(repo);
   assert.equal(r.status, 1);
   assert.match(r.stdout, /acceptance FAIL/);
-  assert.match(r.stdout, /no test command/);
+  assert.match(r.stdout, /wrong order/);
 });
 
-test('evals/accept.mjs: requires a git repository with at least one commit', () => {
-  const notGit = mkdtempSync(join(tmpdir(), 'superagent-eval-accept-'));
-  const plain = runAccept(notGit);
-  assert.equal(plain.status, 1);
-  assert.match(plain.stdout, /not a git repository/);
+test('evals/accept.mjs: fails when a bookmark is missing the title field', () => {
+  const repo = makeContractRepo({ server: contractServer({ includeTitle: false }) });
+  const r = runAccept(repo);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /acceptance FAIL/);
+  assert.match(r.stdout, /missing field/);
+});
 
-  const empty = makeAcceptRepo({ init: true, commit: false });
-  const noCommit = runAccept(empty);
-  assert.equal(noCommit.status, 1);
-  assert.match(noCommit.stdout, /no commits/);
+test('evals/accept.mjs: fails with a wrong-status reason when GET does not return 200', () => {
+  const repo = makeContractRepo({ server: contractServer({ getStatus: 500 }) });
+  const r = runAccept(repo);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /acceptance FAIL/);
+  assert.match(r.stdout, /wrong status/);
+});
+
+test('evals/accept.mjs: fails with a clear reason when the app does not start', () => {
+  const repo = makeContractRepo({ server: "'use strict';\nconsole.error('fixture: refusing to start');\nprocess.exit(1);\n" });
+  const r = runAccept(repo);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /acceptance FAIL/);
+  assert.match(r.stdout, /did not start/);
+  assert.match(r.stdout, /exited with code 1/);
+});
+
+test('evals/accept.mjs: fails when the project has no start command', () => {
+  const repo = makeContractRepo({ server: null });
+  const r = runAccept(repo);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /acceptance FAIL/);
+  assert.match(r.stdout, /no start command/);
 });

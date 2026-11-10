@@ -423,6 +423,31 @@ test('merge-continue accepts a merge the user already committed by hand', () => 
   assert.equal(ticket(root, id, 'T1').status, 'merged');
 });
 
+test('merge-continue records every first-parent commit the merge produced', () => {
+  const { root, id } = conflictSetup();
+  const beforeMerge = sh(root, ['rev-parse', 'HEAD']); // the integration commit the merge conflicts with
+  runCli(['merge', 'T1'], { cwd: root });
+  sh(root, ['add', 'a/file.txt']); // commit the conflicted merge with the markers still in it
+  sh(root, ['commit', '-q', '--no-edit']);
+  const mergeSha = sh(root, ['rev-parse', 'HEAD']);
+  const refused = runCli(['merge-continue'], { cwd: root });
+  assert.equal(refused.code, 3);
+  assert.match(refused.stderr, /remove the conflict markers and commit the fix/);
+
+  writeFileSync(join(root, 'a/file.txt'), 'resolved\n');
+  sh(root, ['add', 'a/file.txt']);
+  sh(root, ['commit', '-q', '-m', 'fix: resolve conflict markers']);
+  const fixSha = sh(root, ['rev-parse', 'HEAD']);
+  const r = runCli(['merge-continue'], { cwd: root });
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  const merged = events(root, id, 'merged').at(-1);
+  assert.equal(merged.sha, fixSha);
+  // Only this merge's commits: the merge commit and the fix commit. The pre-merge direct commit is
+  // not part of this merge and must stay rogue for audit to see it.
+  assert.deepEqual(merged.shas, [mergeSha, fixSha]);
+  assert.ok(!merged.shas.includes(beforeMerge));
+});
+
 test('regression #1: merge-abort <T> aborts the merge, fails the ticket, records a handback and returns to running', () => {
   const { root, id } = conflictSetup();
   const before = sh(root, ['rev-parse', 'HEAD']);

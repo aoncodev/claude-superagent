@@ -3,9 +3,10 @@
 // the independent acceptance command for each arm (single, waves, frontier). `--live` runs the
 // arms and writes a JSON summary under evals/results/.
 //
-// Each arm run gets a fresh temporary git repository. By default `--live` uses the caller's real
-// Claude Code login and configuration; `--isolated-config` instead points every run at a
-// throwaway CLAUDE_CONFIG_DIR, which has no login and therefore requires ANTHROPIC_API_KEY.
+// Each arm run gets a fresh temporary git repository. `--live` defaults to an isolated throwaway
+// CLAUDE_CONFIG_DIR (the reproducible measurement) and therefore requires ANTHROPIC_API_KEY;
+// `--user-config` opts into the caller's real configuration (global plugins, hooks and CLAUDE.md
+// then apply to every arm).
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,7 +25,24 @@ const TAIL_CHARS = 600;
 
 export const ARMS = ['single', 'waves', 'frontier'];
 
-export const FIXTURE_IDEA = 'Build a small bookmarks web app: a page where I can save a link (URL + title) and see all saved links, newest first. Store them in SQLite. Add a GitHub Actions CI job that runs the tests on every push.';
+// The fixture is an explicit contract, not a loose idea: the harness-owned acceptance test
+// (evals/accept.mjs) drives it over HTTP, so every arm is judged by the same independent check.
+export const FIXTURE_CONTRACT = [
+  'The app must satisfy this HTTP contract exactly; an independent harness test runs it after every arm:',
+  '- Start it with `npm start` (package.json scripts.start) or, when there is no start script, `node server.js`. It must listen on `process.env.PORT` (reachable at `127.0.0.1`).',
+  '- Store bookmarks durably in SQLite or a JSON file. When `BOOKMARKS_DB` is set, use it as the database file path.',
+  '- `POST /api/bookmarks` with a JSON body `{ "url": string, "title": string }` responds 200 or 201 and saves the bookmark.',
+  '- `GET /api/bookmarks` responds 200 with a JSON array of bookmark objects, each with at least `url` and `title`, newest first.',
+  'The app\'s own tests are welcome but they are not the eval acceptance; the harness runs the contract itself.',
+].join('\n');
+
+export const FIXTURE_IDEA = [
+  'Build a small bookmarks web app in Node.js. Keep it small: no UI framework is required.',
+  '',
+  FIXTURE_CONTRACT,
+  '',
+  "Add a GitHub Actions CI job that runs the project's tests on every push.",
+].join('\n');
 
 const ARM_NOTES = {
   single: 'One direct agent, no superagent split: the baseline for elapsed time and verified completion.',
@@ -41,16 +59,16 @@ export const PROMPT_PREAMBLE = [
 ].join(' ');
 
 const ARM_INSTRUCTIONS = {
-  single: 'Do not use the superagent plugin for this. Implement the whole idea yourself in this checkout, with tests, and keep going until the project\'s checks pass.',
-  waves: 'Use /superagent:start for the idea below. Follow the superagent:orchestrate skill, but use wave barriers instead of frontier scheduling: do not call `superagent next`; after each wave is fully merged, run `superagent next-wave` and only then launch the next wave. When a worker reports a blocked question, answer it with the most conservative option via `superagent answer <T> --text "<option>"` and continue.',
-  frontier: 'Use /superagent:start for the idea below. Follow the shipped superagent:orchestrate skill exactly, including its `superagent next` loop (frontier scheduling). When a worker reports a blocked question, answer it with the most conservative option via `superagent answer <T> --text "<option>"` and continue.',
+  single: 'Do not use the superagent plugin for this. Implement the whole idea yourself in this checkout, and keep going until the app satisfies the HTTP contract stated in the idea (the project\'s own tests are optional but welcome).',
+  waves: 'Use /superagent:start for the idea below. Follow the superagent:orchestrate skill, but use wave barriers instead of frontier scheduling: do not call `superagent next`; after each wave is fully merged, run `superagent next-wave` and only then launch the next wave. The acceptance criterion is the HTTP contract in the idea, run independently by the harness; the project\'s own tests are optional. When a worker reports a blocked question, answer it with the most conservative option via `superagent answer <T> --text "<option>"` and continue.',
+  frontier: 'Use /superagent:start for the idea below. Follow the shipped superagent:orchestrate skill exactly, including its `superagent next` loop (frontier scheduling). The acceptance criterion is the HTTP contract in the idea, run independently by the harness; the project\'s own tests are optional. When a worker reports a blocked question, answer it with the most conservative option via `superagent answer <T> --text "<option>"` and continue.',
 };
 
-/** The prompt sent to `claude -p` for one arm: headless preamble, arm instruction, idea. */
+/** The prompt sent to `claude -p` for one arm: headless preamble, arm instruction, idea+contract. */
 export function promptFor(arm) {
   const instruction = ARM_INSTRUCTIONS[arm];
   if (!instruction) throw new Error(`unknown arm: ${arm}`);
-  return `${PROMPT_PREAMBLE}\n\n${instruction}\n\nIdea: ${FIXTURE_IDEA}`;
+  return `${PROMPT_PREAMBLE}\n\n${instruction}\n\nIdea:\n${FIXTURE_IDEA}`;
 }
 
 /** The `claude` argv for one arm: the plugin is loaded from this checkout. */
@@ -65,9 +83,22 @@ export function authArgs() {
 
 const quote = (s) => `'${String(s).split("'").join("'\\''")}'`;
 
-/** The environment for a live call: the caller's own by default, throwaway CLAUDE_CONFIG_DIR when isolated. */
+/** The environment for a live call: throwaway CLAUDE_CONFIG_DIR unless the caller opted into their own config. */
 export function envFor(configDir) {
   return configDir ? { ...process.env, CLAUDE_CONFIG_DIR: configDir } : { ...process.env };
+}
+
+export const USER_CONFIG_WARNING = 'superagent eval: warning: --user-config uses your real Claude Code configuration; global plugins, hooks and CLAUDE.md apply to every arm and can distort the comparison.';
+
+/**
+ * What --live still needs before it may start. The default isolated eval config has no login, so it
+ * needs ANTHROPIC_API_KEY; `--user-config` deliberately relies on the caller's own login instead.
+ * Returns the error message, or null when the environment is usable.
+ */
+export function liveEnvironmentError({ userConfig = false, env = process.env } = {}) {
+  if (userConfig) return null;
+  if (env.ANTHROPIC_API_KEY) return null;
+  return 'superagent eval: --live uses an isolated throwaway CLAUDE_CONFIG_DIR by default and needs ANTHROPIC_API_KEY. Set ANTHROPIC_API_KEY, or pass --user-config to deliberately use your own Claude Code login/configuration (global plugins, hooks and CLAUDE.md then apply).';
 }
 
 /** The exact shell line for one arm run, from its own repository. */
@@ -88,21 +119,21 @@ export function authCommandLine({ configDir = null } = {}) {
 }
 
 /**
- * Build the run layout: one temp work root, one repository per arm run and, with
- * `isolated`, one throwaway config directory shared by every run. No `claude` call and no git
- * setup happens here; both are `--live` only.
+ * Build the run layout: one temp work root, one repository per arm run and one throwaway config
+ * directory shared by every run (unless `userConfig` opts into the caller's own configuration).
+ * No `claude` call and no git setup happens here; both are `--live` only.
  */
-export function planEvaluation({ runs = DEFAULT_RUNS, isolated = false } = {}) {
+export function planEvaluation({ runs = DEFAULT_RUNS, userConfig = false } = {}) {
   if (!Number.isInteger(runs) || runs < 1) throw new Error(`--runs must be a positive integer, got ${JSON.stringify(runs)}`);
   const workRoot = mkdtempSync(join(tmpdir(), 'superagent-eval-'));
-  const configDir = isolated ? join(workRoot, 'claude-config') : null;
+  const configDir = userConfig ? null : join(workRoot, 'claude-config');
   if (configDir) mkdirSync(configDir, { recursive: true });
   const arms = ARMS.map((arm) => {
     const repos = [];
     for (let i = 1; i <= runs; i++) repos.push(join(workRoot, runs === 1 ? arm : `${arm}-run${i}`));
     return { arm, repos };
   });
-  return { workRoot, configDir, arms, runs, isolated };
+  return { workRoot, configDir, arms, runs, userConfig };
 }
 
 function setupRepo(repo) {
@@ -257,16 +288,16 @@ function printTable(armResults) {
 }
 
 function dryRun(plan) {
-  const { workRoot, configDir, arms, runs, isolated } = plan;
+  const { workRoot, configDir, arms, runs, userConfig } = plan;
   const lines = [];
   lines.push('superagent eval — dry run (pass --live to execute)');
-  lines.push('flags: --live executes the arms; --runs N repeats every arm (default 1); --isolated-config uses a throwaway CLAUDE_CONFIG_DIR');
+  lines.push('flags: --live executes the arms; --runs N repeats every arm (default 1); --user-config uses your real config instead of the default isolated one');
   lines.push(`arms: ${ARMS.join(', ')}`);
   lines.push(`runs per arm: ${runs}`);
-  lines.push(`fixture idea: ${FIXTURE_IDEA}`);
-  lines.push(`config: ${isolated
-    ? `throwaway CLAUDE_CONFIG_DIR (${configDir}); this has no login, so ANTHROPIC_API_KEY is required`
-    : "the caller's real Claude Code login and configuration (pass --isolated-config for a throwaway CLAUDE_CONFIG_DIR, which requires ANTHROPIC_API_KEY)"}`);
+  lines.push(`fixture idea:\n${FIXTURE_IDEA}`);
+  lines.push(`config: ${userConfig
+    ? "the caller's real Claude Code configuration (--user-config); global plugins, hooks and CLAUDE.md apply to every arm"
+    : `isolated throwaway CLAUDE_CONFIG_DIR (${configDir}); --live needs ANTHROPIC_API_KEY (the default; pass --user-config to use your real config instead)`}`);
   lines.push('pre-approval: every arm prompt pre-approves the proposal as shown and tells the orchestrator to answer any worker question with the most conservative option (headless runs have no AskUserQuestion).');
   lines.push(`work root: ${workRoot}`);
   lines.push('');
@@ -286,7 +317,7 @@ function dryRun(plan) {
 }
 
 function liveRun(plan) {
-  const { configDir, arms, isolated } = plan;
+  const { configDir, arms, userConfig } = plan;
   const generatedAt = new Date().toISOString();
   const armResults = [];
   for (const { arm, repos } of arms) {
@@ -334,7 +365,7 @@ function liveRun(plan) {
     mode: 'live',
     fixture_idea: FIXTURE_IDEA,
     runs_per_arm: plan.runs,
-    config: isolated ? 'isolated' : 'caller',
+    config: userConfig ? 'user' : 'isolated',
     auth_precheck: 'passed',
     work_root: plan.workRoot,
     arms: armResults,
@@ -347,19 +378,22 @@ function liveRun(plan) {
   if (armResults.some(({ runs }) => runs.some((r) => r.exit_code !== 0))) process.exitCode = 1;
 }
 
-const USAGE = `usage: node evals/run.mjs [--live] [--runs N] [--isolated-config]
+const USAGE = `usage: node evals/run.mjs [--live] [--runs N] [--user-config]
 
-  (no flag)         dry run: print the exact commands, prompts and acceptance commands
-  --live            execute every arm; needs an authenticated Claude Code CLI
-  --runs N          repeat every arm N times (default 1)
-  --isolated-config give live runs a throwaway CLAUDE_CONFIG_DIR (requires ANTHROPIC_API_KEY)`;
+  (no flag)          dry run: print the exact commands, prompts and acceptance commands
+  --live             execute every arm; needs ANTHROPIC_API_KEY unless --user-config
+  --runs N           repeat every arm N times (default 1)
+  --user-config      use the caller's real Claude Code config (global plugins/hooks/CLAUDE.md apply)
+  --isolated-config  accepted alias for the default isolated eval config`;
 
 function parseArgs(argv) {
-  const flags = { live: false, isolated: false, runs: DEFAULT_RUNS, help: false };
+  const flags = { live: false, userConfig: false, runs: DEFAULT_RUNS, help: false };
+  const seen = { user: false, isolated: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--live') flags.live = true;
-    else if (arg === '--isolated-config') flags.isolated = true;
+    else if (arg === '--user-config') { flags.userConfig = true; seen.user = true; }
+    else if (arg === '--isolated-config') { flags.userConfig = false; seen.isolated = true; }
     else if (arg === '--help' || arg === '-h') flags.help = true;
     else if (arg === '--runs' || arg.startsWith('--runs=')) {
       const value = arg === '--runs' ? argv[++i] : arg.slice('--runs='.length);
@@ -370,6 +404,7 @@ function parseArgs(argv) {
       throw new Error(`unknown argument: ${arg}`);
     }
   }
+  if (seen.user && seen.isolated) throw new Error('--user-config and --isolated-config are mutually exclusive');
   return flags;
 }
 
@@ -397,19 +432,22 @@ function main(argv) {
     process.exitCode = 1;
     return;
   }
-  if (flags.isolated && !process.env.ANTHROPIC_API_KEY) {
-    process.stderr.write('superagent eval: --isolated-config needs ANTHROPIC_API_KEY: a throwaway CLAUDE_CONFIG_DIR has no login. Set ANTHROPIC_API_KEY, or omit --isolated-config to use your own Claude Code login.\n');
+  const envError = liveEnvironmentError({ userConfig: flags.userConfig });
+  if (envError) {
+    process.stderr.write(`${envError}\n`);
     process.exitCode = 1;
     return;
   }
+  if (flags.userConfig) process.stderr.write(`${USER_CONFIG_WARNING}\n`);
 
   const plan = planEvaluation(flags);
   const auth = authPrecheck({ configDir: plan.configDir });
   if (!auth.ok) {
     process.stderr.write(`superagent eval: authentication pre-check failed (claude -p "reply ok"): ${auth.detail}\n`);
-    process.stderr.write('superagent eval: --live needs an authenticated Claude Code CLI. Log in first (run `claude` or `claude /login`) so your real login is used, or set ANTHROPIC_API_KEY.\n');
-    if (flags.isolated) {
-      process.stderr.write('superagent eval: --isolated-config uses a throwaway CLAUDE_CONFIG_DIR, which has no login; set ANTHROPIC_API_KEY or omit --isolated-config.\n');
+    if (flags.userConfig) {
+      process.stderr.write('superagent eval: --live needs an authenticated Claude Code CLI. Log in first (run `claude` or `claude /login`), or set ANTHROPIC_API_KEY.\n');
+    } else {
+      process.stderr.write('superagent eval: --live uses an isolated config dir with no login: set ANTHROPIC_API_KEY, or pass --user-config to use your own logged-in Claude Code.\n');
     }
     process.exitCode = 1;
     return;

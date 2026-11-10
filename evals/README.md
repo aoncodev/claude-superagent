@@ -1,6 +1,6 @@
 # superagent evals
 
-A small harness for the question in `docs/design/spec.md`: does superagent build things faster than one careful agent at the same accuracy? It compares three ways of building one fixture idea, records speed, cost and attention, and runs an independent acceptance check so a fast arm that does not work cannot look good.
+A small harness for the question in `docs/design/spec.md`: does superagent build things faster than one careful agent at the same accuracy? It compares three ways of building one fixture idea, records speed, cost and attention, and runs a harness-owned acceptance check, so a fast arm that does not satisfy the fixture contract cannot look good.
 
 ## The three arms
 
@@ -10,22 +10,36 @@ A small harness for the question in `docs/design/spec.md`: does superagent build
 | `waves` | wave barriers | Superagent with the v0.1 rule: the next wave launches only after every ticket in the previous wave has merged. |
 | `frontier` | `superagent next` | The shipped v0.2 behaviour: `superagent next` launches any ticket whose `depends_on` are merged, so independent work starts as soon as it is ready. |
 
-All three use the same fixture idea (the bookmarks app from `skills/orchestrate/proposal-format.md`) and the same plugin checkout, so the scheduling rule is the only difference. The waves arm is emulated through the prompt: it is told to use `next-wave` barriers rather than `next`.
+All three use the same fixture idea and contract and the same plugin checkout, so the scheduling rule is the only experimental difference. The waves arm is emulated through the prompt: it is told to use `next-wave` barriers rather than `next`.
 
-Every arm prompt is headless-safe. It states that the proposal is pre-approved exactly as shown (so the arm does not stall at the approval gate) and that, because `AskUserQuestion` is unavailable in `claude -p`, any worker question must be answered with the most conservative option. The prompt text is part of the dry-run output and is tested.
+Every arm prompt is headless-safe. It states that the proposal is pre-approved exactly as shown (so the arm does not stall at the approval gate) and that, because `AskUserQuestion` is unavailable in `claude -p`, any worker question must be answered with the most conservative option. The prompt text, including the contract below, is part of the dry-run output and is tested.
+
+## The fixture contract
+
+The fixture is a small bookmarks web app. It is not judged by its own tests; every arm must satisfy this explicit HTTP contract, which `evals/accept.mjs` drives independently:
+
+- **Start:** `npm start` (a non-empty `package.json` `scripts.start`) or, when there is no start script, `node server.js`. The app must listen on `process.env.PORT` and be reachable at `127.0.0.1`.
+- **Store:** bookmarks must be stored durably in SQLite or a JSON file. When `BOOKMARKS_DB` is set, the app must use it as the database file path. The acceptance test sets it to a file in a fresh temporary directory, so every run starts with an empty database.
+- **Create:** `POST /api/bookmarks` with a JSON body `{ "url": string, "title": string }` responds with HTTP 200 or 201 and saves the bookmark.
+- **List:** `GET /api/bookmarks` responds with HTTP 200 and a JSON array of bookmark objects, each with at least `url` and `title`, newest first.
+
+The app's own tests are welcome but they are not the accuracy measure. A repository whose own `npm test` passes but whose app does not follow this contract fails the eval.
 
 ## What is measured
 
-### Accuracy: the arm's own test command
+### Accuracy: the harness-owned contract test
 
-For every arm run, `evals/accept.mjs <repo>` independently checks the result:
+For every arm run, `evals/accept.mjs <repo>` does the following, and exits 0 only when all of it passes:
 
-1. the arm's repository must be a git repository with at least one commit;
-2. if `package.json` has a non-empty `scripts.test`, run `npm test` there;
-3. else if a `Makefile` exists, run `make test` there;
-4. else the check fails with `no test command`.
+1. find the start command (`npm start`, else `node server.js`) and install declared runtime dependencies if `node_modules` is missing;
+2. pick a free TCP port and a fresh temporary database path, start the app with `PORT` and `BOOKMARKS_DB` in its environment, and wait up to 20 seconds for it to answer;
+3. `POST /api/bookmarks` with two bookmarks, ~1.1 seconds apart;
+4. `GET /api/bookmarks` and assert both bookmarks are present, each has non-empty `url` and `title` fields with the expected values, and the newer bookmark comes first;
+5. stop the app (and the child process `npm start` spawns) and remove the temporary database directory.
 
-It prints `PASS`/`FAIL` and a short output tail, and exits 0/1. Accuracy in an eval table is the acceptance pass rate, i.e. how many repetitions of that arm left a repository that passes its own tests. The acceptance check is deliberately independent of the arm: it does not read `.superagent/` state and does not trust the arm's own report.
+Failures name the reason: `no start command`, `did not start` (exited early or the start command failed), `timed out`, `wrong status`, `missing bookmark`, `missing field`, `wrong title`, or `wrong order`; the app's output tail is printed too. Exit is 0 on pass and 1 on fail.
+
+Accuracy in an eval table is the acceptance pass rate: how many repetitions of that arm left an app that satisfies the contract. The check does not read `.superagent/` state and does not trust the arm's own tests or report.
 
 ### Speed, cost and attention: run metrics
 
@@ -55,21 +69,22 @@ node evals/run.mjs
 Live (not verified in this checkout — see Caveats):
 
 ```
-node evals/run.mjs --live --runs 3
+ANTHROPIC_API_KEY=... node evals/run.mjs --live --runs 3
 ```
 
-- `--live` executes the arms. Before any arm it runs a minimal `claude -p "reply ok"` with exactly the environment/config the arms will use. If that fails, it stops with a message naming the Claude Code login (run `claude` or `claude /login`) or `ANTHROPIC_API_KEY`; no arm is executed and no results file is written.
-- Default config: the caller's real Claude Code login and configuration are used. Nothing is copied and the user's credentials are never read, written or copied by this harness.
-- `--isolated-config`: every live call instead gets one throwaway `CLAUDE_CONFIG_DIR` under the temporary work root. A throwaway config dir has no login, so this mode **requires `ANTHROPIC_API_KEY`** in the environment; the harness fails early with that message when it is missing.
+- **Eval config (default): isolated and reproducible.** Live runs get one throwaway `CLAUDE_CONFIG_DIR` under the temporary work root, so the caller's global plugins, hooks and `CLAUDE.md` are not loaded and do not distort the comparison. A throwaway config dir has no login, so the default mode **requires `ANTHROPIC_API_KEY`**. If it is missing the harness stops before any arm with a message naming `ANTHROPIC_API_KEY` and `--user-config`.
+- **`--user-config`:** explicitly uses the caller's real Claude Code configuration and login instead. This loads global plugins, hooks and `CLAUDE.md` into every arm, so the harness prints one warning saying so. Nothing is copied and the user's credentials are never read, written or copied by this harness.
+- **`--isolated-config`:** accepted alias for the default isolated config.
+- `--live` runs a minimal `claude -p "reply ok"` with exactly the environment/config the arms will use before any arm. If that fails, it stops with a message naming the Claude Code login (run `claude` or `claude /login`) or `ANTHROPIC_API_KEY`; no arm is executed and no results file is written.
 - `--runs N` (default 1) repeats every arm N times, each in a fresh temporary git repository. Aggregate statistics need more than one sample: run at least **3** repetitions per arm (5 or more is better) before comparing arms, and compare medians rather than single runs.
 
 Each arm run is:
 
 ```
-cd <fresh temp repo> && claude -p '<arm prompt>' --plugin-dir <this checkout> --dangerously-skip-permissions --output-format stream-json --verbose
+cd <fresh temp repo> && CLAUDE_CONFIG_DIR=<throwaway> claude -p '<arm prompt>' --plugin-dir <this checkout> --dangerously-skip-permissions --output-format stream-json --verbose
 ```
 
-and the acceptance check is:
+(the `CLAUDE_CONFIG_DIR` prefix is absent with `--user-config`), and after it the harness runs:
 
 ```
 node evals/accept.mjs <fresh temp repo>
@@ -79,9 +94,10 @@ node evals/accept.mjs <fresh temp repo>
 
 ## Caveats
 
-- **Live mode is unverified in this checkout.** It needs an authenticated Claude Code CLI and makes real model calls. Only the dry run, the aggregation and `evals/accept.mjs` are exercised here; the live plumbing (auth pre-check, arm execution, results file) has not been run end-to-end here.
+- **Live mode is unverified in this checkout.** It needs `ANTHROPIC_API_KEY` (or `--user-config` with a logged-in Claude Code CLI) and makes real model calls. Only the dry run, the aggregation and `evals/accept.mjs` are exercised here; the live plumbing (auth pre-check, arm execution, results file) has not been run end-to-end here.
 - **Sample size.** Wall-clock is noisy: rate limits, model choice, network and machine load all move it. One run per arm cannot answer the speed question. Use at least 3 repetitions, preferably interleaved by hand if you care about drift, and report min/median/max rather than a single number.
-- **Accuracy is the arm's own test command.** An arm can pass its project tests while still missing part of the idea; the acceptance check answers "does the result work by its own tests", not "does it match the Charter". Use `human_interventions`, `verifications` and `reviews` as the attention/quality signals alongside it.
-- The arms are not perfectly isolated experiments: they share the Claude Code account, the plugin checkout and the machine. Run each arm more than once before drawing conclusions.
+- **Accuracy is the contract, not the Charter.** The acceptance test answers "does the app satisfy the fixture's HTTP contract", not "does it match the user's Charter". An arm can pass the contract while missing part of the idea; use `human_interventions`, `verifications` and `reviews` as the attention/quality signals alongside it.
+- **The contract is strict.** An arm that builds a working app with a different port, a different database env var, the wrong HTTP status or oldest-first listing fails acceptance even if its own tests pass. That is intentional: it keeps every arm measured against the same independent check.
+- **The default isolated config controls configuration, not the account.** Arms still share the same machine, network, rate limits and `--dangerously-skip-permissions` policy. `--user-config` additionally loads the caller's global plugins, hooks and `CLAUDE.md`; the harness warns once when it is used.
 - `waves` is prompt-pinned, not a separate plugin version. It measures the scheduling rule, not a released old build.
 - All arms load the same plugin checkout (`--plugin-dir`) so the environment is identical; the `single` arm's prompt tells it not to use the plugin, and it has no superagent run or metrics.
