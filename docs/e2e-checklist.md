@@ -83,3 +83,13 @@ sessions above predate these changes, so a fresh headless/manual scenario is sti
 | 28 | Fix/fidelity waves use `max(wave) + 1`, and `add-ticket` suggests the first usable wave | unit-tested |
 | 29 | Evals: dry run prints pre-approval, auth pre-check and an independent acceptance command per arm; live mode not yet run | dry-run tested, live not run |
 | 30 | The reviewer's Read/Grep/Glob tools are confined to the review worktree, and `show --json` is denied by the Bash guard | unit-tested |
+
+## v0.2.2 fixes (unit-verified; live run not repeated)
+
+| # | Check | Verdict |
+|---|---|---|
+| 31 | `retarget` accepts the later-wave handback replacement and moves the dependent ticket to that wave; the run then launches it | unit-tested |
+| 32 | `merge-continue` records every first-parent commit of a marker-merge + fix, so `audit` no longer calls the real merge commit rogue; a rogue commit still fails | unit-tested |
+| 33 | Review coverage ignores case and trailing punctuation; the SKILL tells the orchestrator to send a rejected review back once | unit-tested |
+| 34 | Evals judge accuracy with the harness-owned bookmarks HTTP contract test, not each arm's tests; live defaults to an isolated config needing `ANTHROPIC_API_KEY`, `--user-config` is explicit | dry-run tested, live not run |
+| 35 | `doctor` fails if any of the three guard registrations (write, Bash, Read|Grep|Glob) is missing or points at the wrong script | unit-tested |

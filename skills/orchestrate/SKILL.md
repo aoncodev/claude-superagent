@@ -136,7 +136,7 @@ If the newest `.superagent/runs/<run-id>/reviews/<n>.json` was recorded after th
 
 1. Run `superagent review-setup`. It prints one line, the absolute path of a detached worktree of the integration branch. That worktree contains no `.superagent/` state; keep the path.
 2. Launch an Agent with `subagent_type: "superagent:fidelity-reviewer"` and no isolation. Its prompt is two lines: `Run id: <run-id>` and `Review worktree: <the printed path>`. The reviewer reads the run and the diff from the main checkout and does its judging in the review worktree, so it never sees the tickets or the plan.
-3. When it finishes, record its JSON from the main checkout: `superagent review --file <review worktree>/.superagent/drafts/<run-id>/review.json`. If it prints validation errors, tell the user the reviewer's report was invalid; never invent a review. If it refuses, check the phase.
+3. When it finishes, record its JSON from the main checkout: `superagent review --file <review worktree>/.superagent/drafts/<run-id>/review.json`. If it prints validation errors (including coverage errors), send the reviewer the exact error text once and ask it to correct the JSON in the same file, then run the same command again. If it still fails, tell the user the reviewer's report is invalid and stop; never invent a review. If it refuses, check the phase.
 4. Run `superagent review-close`. It removes the worktree.
 5. Read the newest `.superagent/runs/<run-id>/reviews/<n>.json`. Reading it is fine; never write there. It covers every in-scope Charter item as `met` (with evidence) or `unmet`, plus `extras` and `contradictions`.
 6. If `unmet` lists items that are inside the Charter, and `run.fix_waves_used.fidelity` is 0, run one fidelity wave:
